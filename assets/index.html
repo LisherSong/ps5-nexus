@@ -1282,6 +1282,14 @@ button{font:inherit;color:inherit;background:none;border:0;cursor:pointer}
       </div>
       <div class="note" id="ppStatus" style="color:var(--fg3);margin:4px 0 12px">输入 PC 地址后点「连接」。</div>
       <div class="covers" id="ppGrid" style="margin-top:6px"></div>
+      <div class="fld" style="margin-top:14px;border-top:1px solid var(--line);padding-top:12px">
+        <label for="ppPick">不用 serve-pkg.py　·　从这台电脑直接选 PKG 文件，先上传到 PS5 暂存目录，装完自动清理</label>
+        <div style="display:flex;gap:10px;align-items:center">
+          <button type="button" class="btn pri" id="ppPick">选择 PKG 文件…</button>
+          <input type="file" id="ppFile" multiple accept=".pkg,.fpkg" hidden>
+          <span class="note" id="ppUpStatus" style="color:var(--fg3)">未选择文件</span>
+        </div>
+      </div>
     </div>
     <div class="dlg-f"><button class="btn" id="ppc2">关闭</button></div>
   </div>
@@ -2974,6 +2982,88 @@ ppAddr.addEventListener("keydown", e => { if (e.key === "Enter") ppConnect(); })
 document.getElementById("ppc").addEventListener("click", closePkgPc);
 document.getElementById("ppc2").addEventListener("click", closePkgPc);
 scrimPkgPc.addEventListener("click", e => { if (e.target === scrimPkgPc) closePkgPc(); });
+
+/* ---- 从这台电脑直接安装（不用 serve-pkg.py）：FilePicker 选文件 → 流式上传到
+   /data/wfm/incoming 暂存 → /api/pkg/enqueue 入队本地安装 → 装完自动删暂存
+   （失败保留，便于重试或排查）。⚠️ PS5 WebKit 的 input.value="" 会让已取出的
+   File 句柄失效（再读恒 0 字节 ⇒ 多选全 0 KB）—— 清空 input 必须推迟到整批
+   队列排空之后，绝不放在循环里。 ---- */
+const ppFile = document.getElementById("ppFile");
+const ppPick = document.getElementById("ppPick");
+const ppUpStatus = document.getElementById("ppUpStatus");
+const PKG_STAGING = "/data/wfm/incoming";
+
+function ppUploadOne(file) {
+  return new Promise(resolve => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", "/api/upload-file");
+    xhr.setRequestHeader("X-WFM-Dir", encodeURIComponent(PKG_STAGING));
+    xhr.setRequestHeader("X-WFM-Name", encodeURIComponent(file.name));
+    xhr.setRequestHeader("X-WFM-Size", String(file.size));
+    xhr.upload.onprogress = e => {
+      if (e.lengthComputable && e.total > 0)
+        ppUpStatus.textContent = "上传 " + file.name + "　"
+          + Math.round(e.loaded / e.total * 100) + "%";
+    };
+    xhr.onload = () => resolve(xhr.status >= 200 && xhr.status < 300);
+    xhr.onerror = () => resolve(false);
+    xhr.onabort = () => resolve(false);
+    xhr.send(file);
+  });
+}
+
+/* 安装任务的静默看护：done → 删暂存；failed/cancelled → 保留暂存。
+   poll 404（任务行已被清）也停止看护。 */
+function ppCleanupWhenDone(taskId, path) {
+  const t = setInterval(async () => {
+    const j = await apiPost("/api/install/poll", { id: taskId });
+    if (!j || !j.ok) { clearInterval(t); return; }
+    if (j.state_name === "done") {
+      clearInterval(t);
+      await apiPost("/api/delete", { paths: [path] });   // 失败静默：残留可手动删
+    } else if (j.state_name === "failed" || j.state_name === "cancelled") {
+      clearInterval(t);
+    }
+  }, 1500);
+}
+
+async function ppUploadAndInstall(files) {
+  if (!files || !files.length) return;
+  if (!LIVE) { toast("真机下可从这台电脑安装 PKG"); return; }
+  ppPick.disabled = true;
+  // 暂存目录不存在就建（已存在时报错无妨，忽略结果）
+  await apiJson("/api/mkdir", { path: "/data/wfm", name: "incoming" });
+  let queued = 0;
+  for (const f of files) {
+    ppUpStatus.textContent = "上传 " + f.name + "　0%";
+    const okUp = await ppUploadOne(f);
+    if (!okUp) { ppUpStatus.textContent = "上传失败：" + f.name; break; }
+    ppUpStatus.textContent = "入队安装 " + f.name + " …";
+    const title = f.name.replace(/\.(pkg|fpkg)$/i, "").trim();
+    const j = await apiPost("/api/pkg/enqueue", {
+      path: PKG_STAGING + "/" + f.name, title, version: ""
+    });
+    if (!j || !j.ok) {
+      ppUpStatus.textContent = "入队失败：" + (j && j.error ? j.error : "服务不可用");
+      break;
+    }
+    queued++;
+    const taskId = Number(j.task_id) || 0;
+    pollInstall(taskId, title, /\.fpkg$/i.test(f.name));
+    ppCleanupWhenDone(taskId, PKG_STAGING + "/" + f.name);
+  }
+  ppUpStatus.textContent = queued ? "已入队 " + queued + " 个安装包" : "未入队任何文件";
+  ppPick.disabled = false;
+  // 清空 input 只能在整批排空后：见顶部 WebKit input.value 坑注释
+  try { ppFile.value = ""; } catch (e) { /* ignore */ }
+}
+if (ppPick) ppPick.addEventListener("click", () => ppFile.click());
+if (ppFile) ppFile.addEventListener("change", () => {
+  const files = Array.from(ppFile.files || []);
+  if (!files.length) return;
+  closePkgPc();
+  ppUploadAndInstall(files);
+});
 document.addEventListener("keydown", e => {
   if (e.key === "Escape" && scrimPkgPc.classList.contains("on")) closePkgPc();
 });
