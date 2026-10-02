@@ -2453,6 +2453,13 @@ api_extract(struct MHD_Connection *conn, const char *body, size_t body_size) {
     result = send_json_error(conn, MHD_HTTP_BAD_REQUEST, "invalid path");
     goto done;
   }
+  /* 分卷 RAR 归一：用户全选 part1+part2+… 或点中 .r00 时，把成员收敛成
+     第一卷并去重 —— 7z 引擎只会从第一卷读起，后续卷不该当独立任务。 */
+  if(archive_normalize_sources(paths, &count)) {
+    result = send_json_error(conn, MHD_HTTP_INTERNAL_SERVER_ERROR,
+                             "out of memory");
+    goto done;
+  }
   /* NEXUS front-end only sends `path` + `password`; default the extraction
    * destination to the archive's parent directory. */
   if(!destination && count &&
@@ -2506,9 +2513,17 @@ api_extract(struct MHD_Connection *conn, const char *body, size_t body_size) {
       goto done;
     }
     if(!archive_path_supported(paths[i])) {
-      result = send_json_error_detail(
-        conn, MHD_HTTP_BAD_REQUEST, "unsupported archive type",
-        "archive_type_unsupported", paths[i]);
+      if(archive_multipart_member(paths[i])) {
+        /* 归一没救回来 = 第一卷真的不在旁边：直说缺什么 */
+        result = send_json_error_detail(
+          conn, MHD_HTTP_BAD_REQUEST,
+          "multi-part archive is missing its first part",
+          "archive_first_part_missing", paths[i]);
+      } else {
+        result = send_json_error_detail(
+          conn, MHD_HTTP_BAD_REQUEST, "unsupported archive type",
+          "archive_type_unsupported", paths[i]);
+      }
       goto done;
     }
     if(archive_output_path(paths[i], destination, separate,
@@ -2523,11 +2538,16 @@ api_extract(struct MHD_Connection *conn, const char *body, size_t body_size) {
       goto done;
     }
   }
-  if(archive_helper_probe()) {
+  if(archive_helper_ensure()) {
+    /* ensure() 已尝试自拉起并重试过仍失败：ELF 没部署和没运行是两种
+       问题，用户要做的动作完全不同，别用同一句话糊过去。 */
+    int elf_ok = archive_helper_elf_installed();
     result = send_json_error_detail(
       conn, MHD_HTTP_SERVICE_UNAVAILABLE,
-      "WFM 7zip helper is not running",
-      "archive_helper_not_running", NULL);
+      elf_ok ? "WFM 7zip helper is not running" :
+               "7zip helper ELF is missing at /data/wfm/wfm-7zip-helper.elf",
+      elf_ok ? "archive_helper_not_running" : "archive_helper_elf_missing",
+      NULL);
     goto done;
   }
   {
@@ -2817,6 +2837,11 @@ filemgr_api_request(struct MHD_Connection *conn, const char *url,
   if(!strcmp(url, "/api/save/restore")) return api_save_restore(conn, body, body_size);
   if(!strcmp(url, "/api/pkg/scan")) return api_pkg_scan(conn, body, body_size);
   if(!strcmp(url, "/api/pkg/enqueue")) return api_pkg_enqueue(conn, body, body_size);
+  if(!strcmp(url, "/api/pkg/install-url")) {
+    return strcmp(method, MHD_HTTP_METHOD_POST) ?
+      send_json_error(conn, MHD_HTTP_METHOD_NOT_ALLOWED, "invalid method") :
+      api_pkg_install_url(conn, body, body_size);
+  }
   if(!strcmp(url, "/api/install/poll")) return api_install_poll(conn, body, body_size);
   if(!strcmp(url, "/api/copy")) return api_copy(conn, body, body_size);
   if(!strcmp(url, "/api/move")) return api_move(conn, body, body_size);

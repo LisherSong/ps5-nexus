@@ -14,6 +14,7 @@
 #include <sys/stat.h>
 #include <sys/time.h>
 #include <sys/un.h>
+#include <time.h>
 #include <unistd.h>
 
 #define WFM_HEADER_SIZE 20U
@@ -303,6 +304,43 @@ archive_helper_probe(void) {
   ret = ping_helper(fd);
   close(fd);
   return ret ? -2 : 0;
+}
+
+int
+archive_helper_elf_installed(void) {
+#ifdef __linux__
+  /* 宿主测试里 helper 永远不存在：返回 1 让 filemgr 保持
+     「helper is not running」的原有文案与错误码（hosttest 断言依赖它）。 */
+  return 1;
+#else
+  struct stat st;
+  return !stat(WFM_HELPER_ELF, &st) && S_ISREG(st.st_mode);
+#endif
+}
+
+/* 确认 helper 可用；不可用时先自拉起一次再多等一会儿重新探测。
+   启动时的 autostart（main.c）可能跑得比 elfldr 就绪更早，helper 也可能
+   中途退出 —— 只在入队瞬间探测一次就把「helper 未运行」甩给用户，等于
+   让用户手动重试来修我们自己的时序问题。返回 0 = 可用。 */
+int
+archive_helper_ensure(void) {
+#ifndef __linux__
+  int attempt;
+#endif
+  if(!archive_helper_probe()) return 0;
+#ifdef __linux__
+  /* 宿主：没有 elfldr，探测失败就是失败（hosttest 依赖快速失败）。 */
+  return -1;
+#else
+  if(archive_helper_autostart()) return -1;
+  /* helper 起进程 + 建 socket 需要一点时间：300ms × 10 = 3s 内轮询。 */
+  for(attempt = 0; attempt < 10; attempt++) {
+    struct timespec ts = { 0, 300 * 1000 * 1000 };
+    nanosleep(&ts, NULL);
+    if(!archive_helper_probe()) return 0;
+  }
+  return -1;
+#endif
 }
 
 static int

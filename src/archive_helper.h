@@ -38,6 +38,10 @@ typedef struct archive_helper_snapshot {
 int archive_helper_autostart(void);
 int archive_helper_send_elf(const char *path);
 int archive_helper_probe(void);
+/* probe → (失败则) autostart → 轮询重试。宿主上退化为单次 probe。 */
+int archive_helper_ensure(void);
+/* /data/wfm/wfm-7zip-helper.elf 是否已部署（宿主恒 1，见实现注释）。 */
+int archive_helper_elf_installed(void);
 int archive_helper_list_tasks(archive_helper_snapshot_t **snapshots,
                               size_t *count);
 void archive_helper_free_snapshots(archive_helper_snapshot_t *snapshots,

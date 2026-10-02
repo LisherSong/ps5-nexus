@@ -44,6 +44,7 @@
 - **存档域** `/api/save/list|backup|restore`：强制快照 → 原子落盘（temp+rename）→ 失败回滚；快照目录 `/data/savesnap/<TITLE_ID>/<时间戳>/`（**不放 `/data/save_files/`**，那里会被周期清理 unlink）。
   ⚠️ 只实现了**文件级**快照/回滚（安全关键的那半）。PFS 挂载 / 解密 / 重签是 PS5 内核 + 存档 AuthID(`…0010`) 的活，尚未接线。
 - **PKG 库** `/api/pkg/scan|enqueue` + `/api/install/poll`：递归扫 `.pkg`（读 PARAM.SFO / param.json 取 TITLE_ID/标题/版本）与 `.ffpkg/.ffpfsc/.exfat`（按文件名取标题）；`.pkg` 进内核安装队列，fPKG 镜像**复制进 `/data/homebrew`**（ShadowMount 挂载，不碰内核）。
+- **从 PC 安装** `/api/pkg/install-url`：PC 上 `python tools/serve-pkg.py [端口]`（默认 9898，需与 PS5 同网段、防火墙放行），PS5 网页「PKG管理 → 从 PC 安装」填 `PC IP:端口` → 卡片列表 → 安装。**系统安装器自己从 PC 下载（Range 206），PKG 不落 PS5 硬盘**。真机验证：① catalog 能列出卡片；② 点安装后系统下载列表出现该游戏；③ PC 脚本窗口能看到 PS5 的 Range 请求；④ 安装中断后重试不残留半成品（下载是系统安装器内部状态）。
 - **NAS**（SMB2/3 + NFSv3/4，vendored libsmb2 / libnfs）：浏览 + `/api/fetch` 拉取（**默认续传**：`stat` 已有目标 → `lseek` + 不 TRUNC）。
   ⚠️ 顺带修了 vendored libsmb2 的一个 **opendir 错误路径 use-after-free**（`free_smb2dir()` 无条件 free 调用者的 `cb_data`）—— 真机上表现为「进程直接没了」，已按上游方案移植 `dir->free_cb_data` + `smb2_dir_take_cb_data()`。
 - **`/api/status`** 上报真实本机 IP（UDP connect 取）+ **当前运行版本**；前端顶栏「本机地址」不再是播种值。
@@ -92,14 +93,14 @@ http://<IP>:2026/api/diag
 
 - **真 PS5 `.pkg` 内核安装**需要 `kstuff` 在跑；没装时 `/api/pkg/enqueue` 会报 unsupported（文件浏览/上传/解压不受影响）。
 - **PFS 存档真正写回**（解密/重签）未接：`save/backup` 做的是文件级快照，真机上若存档目录本身不可直接写，需要在挂载层补。
-- **解压依赖外部 helper**：`/data/wfm/wfm-7zip-helper.elf`（单独分发，不在本仓构建）。
+- **解压依赖外部 helper**：`/data/wfm/wfm-7zip-helper.elf`（单独分发，不在本仓构建）。payload 启动时和**每次入队解压时**都会尝试自拉起（把该 ELF 发给本机 elfldr :9021，3s 内轮询）；若 ELF 没部署，报错会明说是 `archive_helper_elf_missing`（缺文件）而不是笼统的没运行 —— 两种问题要做的动作不同。
 - 本机（非 PS5）`:2026` 上 `app/register`、Sony `.pkg` 安装会返回 PS5-only 错，属预期。
-- **表头（名称/大小/时间/权限）仍会随列表滚走**：`.fmtable` 的 `overflow:hidden` 对 `thead` 而言本身就是滚动容器，就地加 sticky 不生效，要改表格结构才行。
+- **表头冻结已修**（旧案：`.fmtable` 的 `overflow:hidden` 困住 sticky th + `border-collapse:collapse` 下 sticky 边框撕裂 ⇒ 改 `separate` + 滚动收进 `main` 容器）：列表下滚时表头毛玻璃钉在吸顶工具条下沿，三个视图共用。真机复核点：WebKit 的 `backdrop-filter` 与 sticky 组合表现。
 
 ## 5. 怎么在本机重跑验证
 ```bash
 # Windows 侧（注意用 stdin 重定向，别用 bash -lc '...$VAR...'）
-wsl.exe -d Ubuntu-22.04 bash < .build/build-verify-wsl.sh   # 构建 + ELF 内容 + hosttest(80)
+wsl.exe -d Ubuntu-22.04 bash < .build/build-verify-wsl.sh   # 构建 + ELF 内容 + hosttest(83)
 wsl.exe -d Ubuntu-22.04 bash < .build/hosttest-wsl.sh       # 只跑测试，连跑两次
 node .build/preview_check.mjs                                # 前端 57 项
 

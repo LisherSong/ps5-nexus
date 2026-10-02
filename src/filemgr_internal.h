@@ -186,6 +186,8 @@ enum MHD_Result api_pkg_scan(struct MHD_Connection *conn, const char *body,
                              size_t body_size);
 enum MHD_Result api_pkg_enqueue(struct MHD_Connection *conn, const char *body,
                                 size_t body_size);
+enum MHD_Result api_pkg_install_url(struct MHD_Connection *conn, const char *body,
+                                    size_t body_size);
 enum MHD_Result api_install_poll(struct MHD_Connection *conn, const char *body,
                                  size_t body_size);
 

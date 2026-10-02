@@ -96,7 +96,15 @@ nas_list(struct MHD_Connection *conn, const char *scheme, const char *path,
 
   if(transfer_list(s, path, &list, &count) != NEXUS_OK) {
     const char *be = transfer_last_error(s);
-    snprintf(why, sizeof(why), "NAS 连接失败：%s", be ? be : "未知原因");
+    /* 0xc0000236 (CONNECTION_REFUSED) = 主机层就没有应答/拒绝：跟共享名、
+       账号密码都无关，先查 SMB 服务和网络可达性 —— 不给提示用户只会
+       反复检查密码。 */
+    if(be && strstr(be, "CONNECTION_REFUSED"))
+      snprintf(why, sizeof(why), "NAS 连接失败：%s"
+               "（主机没有应答：请确认 NAS 的 SMB 服务已开启、"
+               "地址和端口正确，且 PS5 与 NAS 在同一网络）", be);
+    else
+      snprintf(why, sizeof(why), "NAS 连接失败：%s", be ? be : "未知原因");
     transfer_close(s);
     return send_json_error_detail(conn, MHD_HTTP_BAD_GATEWAY, why,
                                   "nas_list_failed", NULL);

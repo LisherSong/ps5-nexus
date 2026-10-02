@@ -80,10 +80,14 @@ entry, and an interrupted extraction can be resumed after the payload restarts.
 - **fPKG / decrypted folder**: these have no Sony install entry point, so
   "install" means copying them into `/data/homebrew`, where a mounted-folder
   payload picks them up.
-- Regular `.pkg` files are handed to the system installer. The installer entry
-  point takes a metadata structure rather than a path, and the payload streams
-  the file over loopback HTTP so a package on internal storage or on a share can
-  be installed without a USB drive.
+- Regular `.pkg` files are handed to the system installer, which accepts both
+  local paths and `http://` URLs as the package URI.
+- **Install straight from a PC over LAN** (`PKG管理 → 从 PC 安装`): run
+  `tools/serve-pkg.py` in the folder with your `.pkg` files, enter the PC
+  address in the console UI, and pick from the card list. The system installer
+  downloads the file itself (Range requests) — the package never touches the
+  console disk. The PC-side server is a single dependency-free Python script
+  (adapted from Loopayeh/pkg-sender's `serve_pkg.py`, MIT).
 
 ### Saves
 

@@ -848,6 +848,40 @@ api_pkg_enqueue(struct MHD_Connection *conn, const char *body, size_t body_size)
                                 "not a PKG or fPKG image", "pkg_type_invalid", NULL);
 }
 
+/* Install straight from a URL (typically http://<pc>:<port>/<file.pkg> served
+ * by tools/serve-pkg.py). sceAppInstUtilInstallByPackage accepts http:// URIs
+ * and the system installer downloads the file itself (Range requests), so the
+ * PKG never touches the console disk. The task queue treats the URL like a
+ * local path: pkg_installer_install() passes any non-/data/ string through to
+ * metadata.uri verbatim. */
+enum MHD_Result
+api_pkg_install_url(struct MHD_Connection *conn, const char *body, size_t body_size) {
+  char *url = req_param(conn, body, body_size, "url");
+  unsigned long id = 0;
+  int rc;
+
+  if(!url || strlen(url) < sizeof("http://x/") - 1 ||
+     strlen(url) > 512 || strncmp(url, "http://", 7) ||
+     !memchr(url + 7, '/', strlen(url) - 7)) {
+    free(url);
+    return send_json_error_detail(conn, MHD_HTTP_BAD_REQUEST,
+                                  "url must start with http://",
+                                  "pkg_url_invalid", NULL);
+  }
+  rc = filemgr_queue_pkg(url, &id);
+  free(url);
+  if(rc == PKG_INSTALL_UNSUPPORTED) {
+    return send_json_error_detail(conn, MHD_HTTP_NOT_IMPLEMENTED,
+                                  "package installation is only available on PS5",
+                                  "pkg_install_unsupported", NULL);
+  }
+  if(rc) {
+    return send_json_error(conn, MHD_HTTP_INTERNAL_SERVER_ERROR,
+                           "could not queue package installation");
+  }
+  return task_id_response(conn, id);
+}
+
 /* Map an internal task state to the NEXUS front-end's state_name. */
 static const char *
 task_state_name_nexus(task_state_t s) {

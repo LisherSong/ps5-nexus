@@ -444,6 +444,36 @@ def main():
               st == 503 and j and j.get("error_code") == "archive_helper_not_running",
               "st=%s j=%s" % (st, j))
 
+        # ---- 14c. multi-part RAR: members collapse to the first volume ----
+        # 用户全选 game.part1.rar+part2+… 或只点 game.r00 时，此前后续卷不在
+        # 后缀表里直接 400 "unsupported archive type"，一个字不提分卷。归一
+        # 之后：后续卷/全集 → 第一卷（校验通过 → 503 helper），缺第一卷 →
+        # 明确的 archive_first_part_missing。
+        mp = os.path.join(ROOT, "mpgame.part1.rar")
+        with open(mp, "wb") as f:
+            f.write(b"rar-part1")
+        with open(os.path.join(ROOT, "mpgame.part2.rar"), "wb") as f:
+            f.write(b"rar-part2")
+        st, j = c.api_json("/api/extract", {"path": ROOT + "/mpgame.part2.rar",
+                                            "dst_dir": ROOT + "/sub"})
+        check("extract .part2.rar alone -> collapses to part1 (503, not 400)",
+              st == 503 and j and j.get("error_code") == "archive_helper_not_running",
+              "st=%s j=%s" % (st, j))
+        st, j = c.api_json("/api/extract",
+                           {"path": ROOT + "/mpgame.part1.rar\n"
+                            + ROOT + "/mpgame.part2.rar",
+                            "dst_dir": ROOT + "/sub"})
+        check("extract part1+part2 both selected -> deduped to part1 (503)",
+              st == 503 and j and j.get("error_code") == "archive_helper_not_running",
+              "st=%s j=%s" % (st, j))
+        with open(os.path.join(ROOT, "mpgame.r00"), "wb") as f:
+            f.write(b"rar-legacy-volume")
+        st, j = c.api_json("/api/extract", {"path": ROOT + "/mpgame.r00",
+                                            "dst_dir": ROOT + "/sub"})
+        check("extract legacy .r00 with .rar missing -> first-part error",
+              st == 400 and j and j.get("error_code") == "archive_first_part_missing",
+              "st=%s j=%s" % (st, j))
+
         # ---- 15. NEXUS-only stubs must be graceful ----
         st, j = c.api_post("/api/save/list", {"title_id": "CUSA00000"})
         check("POST /api/save/list ok (empty)", j and j.get("ok"), "j=%s" % j)
@@ -540,6 +570,29 @@ def main():
         check("fPKG image copied into homebrew",
               os.path.exists(os.path.join(brew_dir, "image.ffpkg")))
         c.wait_idle()
+
+        # ---- 15d. /api/pkg/install-url (PC 网络直装入队) ----
+        st, j = c.api_post("/api/pkg/install-url", {"url": "ftp://pc/game.pkg"})
+        check("pkg/install-url rejects non-http scheme (400)",
+              st == 400 and j and j.get("error_code") == "pkg_url_invalid",
+              "st=%s j=%s" % (st, j))
+        st, j = c.api_post("/api/pkg/install-url", {"url": "http://"})
+        check("pkg/install-url rejects empty url (400)",
+              st == 400 and j and j.get("error_code") == "pkg_url_invalid",
+              "st=%s j=%s" % (st, j))
+        st, j = c.api_post("/api/pkg/install-url",
+                           {"url": "http://" + "9" * 520 + "/x.pkg"})
+        check("pkg/install-url rejects oversized url (400)",
+              st == 400 and j and j.get("error_code") == "pkg_url_invalid",
+              "st=%s j=%s" % (st, j))
+        st, j = c.api_json("/api/pkg/install-url",
+                           {"url": "http://192.168.1.10:9898/pkg/game.pkg"})
+        # 宿主（__linux__）没有安装层 ⇒ 501；真机才会入队返回 task_id
+        check("pkg/install-url valid url -> 501 on host (pkg_install_unsupported)",
+              st == 501 and j and j.get("error_code") == "pkg_install_unsupported",
+              "st=%s j=%s" % (st, j))
+        st, _ = c.raw("GET", "/api/pkg/install-url")
+        check("pkg/install-url GET -> 405", st == 405, "st=%s" % st)
 
         # ---- 15d. save domain: list / backup / restore ----
         st, j = c.api_post("/api/save/list", {"title_id": title})
