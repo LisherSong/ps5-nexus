@@ -897,6 +897,12 @@ ps5-nexus/
 - 🪤🪤 **`src/httpd.c` 永不进宿主套件**（缺 `<microhttpd.h>`，`make linux` 也编不过）⇒ HTTP 层的 bug 在本机
   **不可复现、不可断言**，`make`/单测全绿完全不代表它没问题。⇒ ① 改 httpd.c 只能靠 SDK 机 `-Werror` 编译 +
   真机；② 真机崩溃只能靠**内置自述日志**（`GET /api/diag`），别指望 shell / coredump。
+- 🆕🪤🪤 **同一类盲区的第二处：`#ifndef __linux__` 包起来的「真机专属」代码块，宿主构建根本不编它。**
+  2026-10-02 实测：`pkg_task_worker()` 在 `#ifndef __linux__` 里，`task_update()` 少传一个
+  `add_done` 参数（4 参 vs 5 参）—— **`make linux` 全绿、107 项 hosttest 全绿，只有 `make all`
+  （prospero-clang，`-Werror`）报 `too few arguments`**。⇒ **规矩：提交前必须跑一次全量 PS5 ELF
+  重建**（`.build/rebuild-elf.sh`）；`make linux` + 宿主套件的绿，对「只存在于真机分支里的代码」
+  **零信息量**。判据不是「有过一次绿」，而是**这一轮的 `make all` 出现在日志里且 rc=0**。
 - 🪤 **「进程一交互就退」先分 GET 与 POST**：页面能打开 ⇒ `GET` + **空 body** 那条路是好的
   （`cs->body == NULL`）⇒ 罪魁在后面那批**有 body 的 POST**。这个判据能一步把范围缩小一半。
 - 🪤 **诊断代码本身必须被测**：`/api/diag` 是崩溃的唯一证据，丢行 / 截错尾给出的是**自信的错答案**

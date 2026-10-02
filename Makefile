@@ -54,15 +54,23 @@ LINUX_BIN  := PS5-Nexus-linux-$(VERSION_TAG)
 COMMON_SRCS := src/main.c src/websrv.c src/filemgr.c src/file_response.c src/task.c \
   src/upload.c src/download.c src/text.c src/list.c src/space.c src/fs_util.c \
   src/json_util.c src/path_util.c src/asset.c src/mime.c src/notify.c \
-  src/pkg_installer.c src/pkg_info.c src/nexus_port.c src/transfer.c \
-  src/archive_extract.c src/elfldr.c
+  src/pkg_installer.c src/pkg_stream.c src/pkg_info.c src/nexus_port.c \
+  src/transfer.c src/archive_extract.c src/elfldr.c
 PS5_SRCS    := $(COMMON_SRCS) src/app_installer.c src/cpu_support_stub.c
 LINUX_SRCS  := $(COMMON_SRCS)
+# assets/serve-pkg.exe (the Windows helper offered as a download off the payload's
+# own web root) is folded in with .incbin, not with the C-array generator — a
+# 9 MB binary would otherwise produce ~55 MB of source. It is PS5-only and
+# optional: without the file the rest of the payload still builds, and the
+# download link 404s. Produce it with tools/build-serve-pkg-exe.sh.
+ifneq ($(wildcard assets/serve-pkg.exe),)
+PS5_SRCS    += src/embed_serve_pkg.c
+endif
 BASE_ASSETS := $(filter-out %.dds,$(wildcard assets/*))
 ifneq ($(filter linux,$(MAKECMDGOALS)),)
-ASSETS      := $(BASE_ASSETS)
+ASSETS      := $(filter-out assets/serve-pkg.exe,$(BASE_ASSETS))
 else
-ASSETS      := $(filter-out assets/icon0.png,$(BASE_ASSETS))
+ASSETS      := $(filter-out assets/icon0.png assets/serve-pkg.exe,$(BASE_ASSETS))
 endif
 GEN_SRCS    := $(patsubst assets/%,gen/%, $(ASSETS:=.c))
 

@@ -109,11 +109,21 @@ archive_multipart_first(const char *path) {
     const char *p = dot;
     while(p > path && isdigit((unsigned char)p[-1])) p--;
     if(p != dot && p - path >= 5 && !strncasecmp(p - 5, ".part", 5)) {
-      /* 把 N 归一成 1：只重写数字段，".part" 前缀原样保留 */
+      /* 把 N 归一成 1：只重写数字段，".part" 前缀原样保留。
+         ★ 必须保留原来的补零宽度：xxx.part02.rar 的第一卷是
+         xxx.part01.rar，写成 xxx.part1.rar 会 lstat 失败，用户看到
+         「找不到第一卷」——而其实它就在旁边。 */
       size_t prefix = (size_t)(p - path);
-      if(!(out = malloc(prefix + 6))) return NULL;
+      size_t width = (size_t)(dot - p);
+      size_t i;
+      char *num;
+
+      if(!(out = malloc(prefix + width + 5))) return NULL;  /* + ".rar" + NUL */
       memcpy(out, path, prefix);
-      memcpy(out + prefix, "1.rar", 6);
+      num = out + prefix;
+      for(i = 0; i + 1 < width; i++) num[i] = '0';
+      num[width - 1] = '1';
+      memcpy(out + prefix + width, ".rar", 5);
       return out;
     }
   }

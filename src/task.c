@@ -182,6 +182,42 @@ task_update_eta_locked(file_task_t *task, const struct timespec *now_mono) {
 }
 
 void
+task_set_progress(file_task_t *task, unsigned long long done,
+                  unsigned long long total, const char *current) {
+  struct timespec now_mono;
+  time_t now;
+
+  clock_gettime(CLOCK_MONOTONIC, &now_mono);
+  now = time(NULL);
+
+  pthread_mutex_lock(&g_tasks_lock);
+  if(current && current[0]) {
+    snprintf(task->current, sizeof(task->current), "%s", current);
+  }
+  if(total) task->total = total;
+  task->done = done;
+  if(task->total && task->done > task->total) task->done = task->total;
+  if(!task->transfer_started_at) task->transfer_started_at = now;
+  if(task->speed_sample_time.tv_sec) {
+    long long elapsed_ns = timespec_delta_ns(&now_mono, &task->speed_sample_time);
+    if(elapsed_ns >= 250000000LL) {
+      unsigned long long delta = task->done > task->speed_sample_done
+                                     ? task->done - task->speed_sample_done : 0;
+      task->speed = (unsigned long long)((delta * 1000000000ULL) /
+                                         (unsigned long long)elapsed_ns);
+      task->speed_sample_done = task->done;
+      task->speed_sample_time = now_mono;
+    }
+  } else {
+    task->speed_sample_done = task->done;
+    task->speed_sample_time = now_mono;
+  }
+  task_update_eta_locked(task, &now_mono);
+  task->updated_at = now;
+  pthread_mutex_unlock(&g_tasks_lock);
+}
+
+void
 task_update(file_task_t *task, task_state_t state, const char *current,
             unsigned long long add_done, const char *error) {
   struct timespec now_mono;

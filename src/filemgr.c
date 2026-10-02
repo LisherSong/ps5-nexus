@@ -1633,22 +1633,31 @@ task_request_error(struct MHD_Connection *conn, file_task_t *task,
 
 typedef struct extract_progress_context {
   file_task_t *task;
-  unsigned long long base; /* bytes reported by the archives already done */
-  unsigned long long last; /* last absolute value reported to the task */
+  unsigned long long base;  /* bytes reported by the archives already done */
+  unsigned long long done;  /* last absolute byte count reported */
+  unsigned long long total; /* base + the current archive's declared total */
 } extract_progress_context_t;
 
 /* The engines report bytes written for the CURRENT archive only; the worker
  * loops over the (first-volume-collapsed) sources and folds them into one
  * running task total itself. Returning non-zero is the engine's abort
- * channel, so this doubles as the cancel path -- no separate callback needed. */
+ * channel, so this doubles as the cancel path -- no separate callback needed.
+ *
+ * The denominator matters as much as the count: with no total the task centre
+ * can only print "—", which is why every extraction used to look frozen even
+ * while it was working. The engines learn the total during their scan pass, so
+ * it is published only from NEXUS_PHASE_EXTRACT onwards — during the scan it is
+ * still growing and an early, small value would make the bar jump backwards. */
 static int
-extract_progress(uint64_t written, void *arg) {
+extract_progress(int phase, uint64_t done, uint64_t total, const char *current,
+                 void *arg) {
   extract_progress_context_t *ctx = arg;
-  unsigned long long abs = ctx->base + written;
-  unsigned long long add = abs >= ctx->last ? abs - ctx->last : 0;
 
-  ctx->last = abs;
-  task_update(ctx->task, TASK_RUNNING, NULL, add, NULL);
+  ctx->done = ctx->base + (unsigned long long)done;
+  if(phase != NEXUS_PHASE_SCAN && total)
+    ctx->total = ctx->base + (unsigned long long)total;
+  task_set_progress(ctx->task, ctx->done, ctx->total,
+                    (current && current[0]) ? current : NULL);
   return task_cancel_requested(ctx->task);
 }
 
@@ -1673,13 +1682,16 @@ extract_task_worker(file_task_t *task) {
     req.password = task->password ? task->password : NULL;
     req.progress = extract_progress;
     req.ctx = &context;
-    context.last = context.base;
+    /* Fresh denominator per archive: each engine reports its own byte total,
+       and the worker folds them into one running task. */
+    context.done = context.base;
+    context.total = context.base;
     task_update(task, TASK_RUNNING, task->srcs[i], 0, NULL);
     memset(&result, 0, sizeof(result));
     err = nexus_extract(task->srcs[i], task->extract_destinations[i],
                         &req, &result);
     if(err == NEXUS_OK) {
-      context.base = context.last;
+      context.base = context.done;
       continue;
     }
     if(err == NEXUS_ERR_CANCELLED || task_cancel_requested(task)) {
@@ -2615,27 +2627,69 @@ pkg_task_worker(void *arg) {
 
   while(1) {
     file_task_t *task;
-    int result;
+    pkg_install_handle_t *handle;
+    const char *note;
+    int percent = 0;
+    int settled = 0;
 
     pthread_mutex_lock(&g_tasks_lock);
     while(!(task = next_pkg_task_locked())) {
       pthread_cond_wait(&g_pkg_tasks_cond, &g_tasks_lock);
     }
     task->state = TASK_RUNNING;
+    /* Install progress is a PERCENTAGE, not bytes: it comes from the console's
+     * own status query, which reports how much of the package IT has pulled.
+     * /api/install/poll and the task centre both branch on kind 3 for this. */
+    task->total = 100;
     snprintf(task->current, sizeof(task->current), "%s", task->src);
     task->updated_at = time(NULL);
     pthread_mutex_unlock(&g_tasks_lock);
 
-    result = pkg_installer_install(task->srcs[0]);
-    if(result) {
-      char error_code[16];
-      snprintf(error_code, sizeof(error_code), "0x%08X", (unsigned int)result);
-      task_set_error_code(task, "pkg_install_failed", error_code);
+    handle = pkg_install_begin(task->srcs[0]);
+    if(!handle) {
+      /* Nothing was started: kstuff missing, no authid, unreadable package. The
+       * reason is specific and actionable, so it goes to the user verbatim. */
+      note = pkg_install_last_error();
+      task_set_error_code(task, "pkg_install_failed", note);
       task_update(task, TASK_FAILED, task->src, 0,
-                  "package installation failed");
-    } else {
-      task_update(task, TASK_DONE, task->src, 0, NULL);
+                  note ? note : "package installation failed");
+      continue;
     }
+
+    /* The console installs in the BACKGROUND: the begin() call returning 0 only
+     * means the download started. Reporting DONE there is exactly how an
+     * install used to be "complete" while no game ever appeared, so the only
+     * accepted terminal state is the console saying the title is playable. */
+    while(!settled) {
+      nexus_err_t err;
+      struct timespec pause = {0, 200L * 1000 * 1000};
+
+      if(task_cancel_requested(task)) {
+        task_update(task, TASK_CANCELED, task->src, 0, "canceled");
+        settled = 1;
+        break;
+      }
+      err = pkg_install_poll(handle, &percent);
+      note = pkg_install_note(handle);
+      task_set_progress(task, (unsigned long long)(percent < 0 ? 0 : percent),
+                        100, note);
+      if(err == NEXUS_ERR_PARTIAL) {
+        nanosleep(&pause, NULL);
+        continue;
+      }
+      if(err == NEXUS_OK) {
+        task_update(task, TASK_DONE, task->src, 0, note);
+      } else {
+        task_set_error_code(task, "pkg_install_failed",
+                            note ? note : "package installation failed");
+        task_update(task, TASK_FAILED, task->src, 0,
+                    note ? note : "package installation failed");
+      }
+      settled = 1;
+    }
+
+    /* Releases the stream publication and ends the AppInstUtil session. */
+    pkg_install_free(handle);
   }
   return NULL;
 }
@@ -2788,6 +2842,7 @@ filemgr_api_request(struct MHD_Connection *conn, const char *url,
     return api_app_register(conn, body, body_size);
   if(!strcmp(url, "/api/status")) return api_status(conn, body, body_size);
   if(!strcmp(url, "/api/fetch")) return api_fetch(conn, body, body_size);
+  if(!strcmp(url, "/api/save/scan")) return api_save_scan(conn, body, body_size);
   if(!strcmp(url, "/api/save/list")) return api_save_list(conn, body, body_size);
   if(!strcmp(url, "/api/save/backup")) return api_save_backup(conn, body, body_size);
   if(!strcmp(url, "/api/save/restore")) return api_save_restore(conn, body, body_size);

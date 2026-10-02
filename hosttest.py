@@ -224,10 +224,20 @@ def main():
     snap_dir = os.path.join(ROOT, "snaps")
     brew_dir = os.path.join(ROOT, "homebrew")
     # A title's live save dir + an old snapshot, so backup/restore have fixtures.
+    # ★ 布局必须与真机一致：<account home>/savedata_prospero/<TITLE_ID>。
+    #   WFM_SAVE_ROOT 扮演「一个账号的 home」，savedata_prospero 是它下面的 leaf。
+    #   夹具里把两级写反的话，测试和真机会同时绿 —— 那种绿什么也没证明。
     title = "CUSA00001"
-    os.makedirs(os.path.join(save_root, title, "savedata_prospero"), exist_ok=True)
-    with open(os.path.join(save_root, title, "savedata_prospero", "sd.bin"), "wb") as f:
+    os.makedirs(os.path.join(save_root, "savedata_prospero", title), exist_ok=True)
+    with open(os.path.join(save_root, "savedata_prospero", title, "sd.bin"), "wb") as f:
         f.write(b"LIVE-V2")
+    # 第二个存档 + 一个 meta 叶：/api/save/scan 要能同时列出两个叶下的条目。
+    os.makedirs(os.path.join(save_root, "savedata_prospero", "GAME00002"), exist_ok=True)
+    with open(os.path.join(save_root, "savedata_prospero", "GAME00002", "g2.bin"), "wb") as f:
+        f.write(b"G2-SAVE-0")
+    os.makedirs(os.path.join(save_root, "savedata_prospero_meta", "GAME00002"), exist_ok=True)
+    with open(os.path.join(save_root, "savedata_prospero_meta", "GAME00002", "m.bin"), "wb") as f:
+        f.write(b"META")
     os.makedirs(os.path.join(snap_dir, title, "111"), exist_ok=True)
     with open(os.path.join(snap_dir, title, "111", "sd.bin"), "wb") as f:
         f.write(b"OLD-V1")
@@ -467,6 +477,30 @@ def main():
               st == 400 and j and j.get("error_code") == "archive_first_part_missing",
               "st=%s j=%s" % (st, j))
 
+        # ---- 14c-bis. zero-padded volume names must keep their width ----
+        # 用户原话：「不选第一个分卷就报错，选第一个分卷就可以」。
+        # `mpz.part02.rar` 的第一卷是 `mpz.part01.rar`，不是 `mpz.part1.rar`。
+        # 归一函数曾经把数字段直接写成 "1"，补零宽度被吃掉 ⇒ lstat 找不到第一卷
+        # ⇒ 报 "multi-part archive is missing its first part"（而它就在旁边）。
+        for nm in ("mpz.part01.rar", "mpz.part02.rar"):
+            with open(os.path.join(ROOT, nm), "wb") as f:
+                f.write(b"rar-" + nm.encode())
+        os.makedirs(os.path.join(ROOT, "subz"), exist_ok=True)
+        st, j = c.api_json("/api/extract", {"path": ROOT + "/mpz.part02.rar",
+                                            "dst_dir": ROOT + "/subz"})
+        check("extract .part02.rar -> collapses to .part01.rar (padded width kept)",
+              st == 200 and j and j.get("ok") and j.get("task_id") is not None,
+              "st=%s j=%s" % (st, j))
+        # 反向：真的缺第一卷时仍要报错（证明上面那一条不是「一律放行」）
+        os.makedirs(os.path.join(ROOT, "onlyz"), exist_ok=True)
+        with open(os.path.join(ROOT, "onlyz", "gone.part03.rar"), "wb") as f:
+            f.write(b"rar-x")
+        st, j = c.api_json("/api/extract", {"path": ROOT + "/onlyz/gone.part03.rar",
+                                            "dst_dir": ROOT + "/subz"})
+        check("extract .part03.rar with no .part01 present -> first-part error",
+              st == 400 and j and j.get("error_code") == "archive_first_part_missing",
+              "st=%s j=%s" % (st, j))
+
         # ---- 14d. REAL in-process extraction: zip / rar / 7z / volumes ----
         # Fixtures come from ps5-nexus-legacy's engine suite (tests/fixtures/).
         # These are the "host-tested leaves" the helper design could never
@@ -510,6 +544,16 @@ def main():
               bool(ok and root_txt == b"root content"), "got=%r pj=%s" % (root_txt, pj))
         check("real zip unpack: nested dirs created",
               bool(ok and nested_txt == b"nested content"), "got=%r" % (nested_txt,))
+        # 进度链：引擎上报 bytes_total，但适配层曾只转发 bytes_done ⇒ task->total 恒 0
+        # ⇒ 前端 pctOf() 恒 0 ⇒「解压没有进度条」。这里钉住 total 真的 > 0。
+        check("extract reports a non-zero byte total (progress denominator)",
+              bool(ok and (pj.get("total") or 0) > 0),
+              "progress=%s total=%s" % (pj.get("progress") if pj else None,
+                                        pj.get("total") if pj else None))
+        check("extract progress never exceeds the total",
+              bool(ok and (pj.get("progress") or 0) <= (pj.get("total") or 0)),
+              "progress=%s total=%s" % (pj.get("progress") if pj else None,
+                                        pj.get("total") if pj else None))
 
         # RAR (unrar7, C++, RARDLL mode)
         st, j, pj = fx_extract("basic-v6.rar", "xz-rar")
@@ -731,7 +775,7 @@ def main():
         check("save/restore returns task_id", j and j.get("ok") and rs_id is not None,
               "j=%s" % j)
         c.wait_idle()
-        live_file = os.path.join(save_root, title, "savedata_prospero", "sd.bin")
+        live_file = os.path.join(save_root, "savedata_prospero", title, "sd.bin")
         ok_restore = False
         try:
             with open(live_file, "rb") as f:
@@ -744,6 +788,52 @@ def main():
         st, j = c.api_post("/api/save/backup", {"title_id": "CUSA99999"})
         check("save/backup unknown title -> not found", st == 404 and j
               and not j.get("ok"), "st=%s j=%s" % (st, j))
+
+        # save/list must answer BOTH questions: "is there a save here" and
+        # "is there a snapshot". Only reporting snapshots made a console that
+        # had never been backed up look like it had no save at all — the user
+        # could not tell "no save" from "not backed up yet", and a manually
+        # typed title id looked identical to a typo.
+        st, j = c.api_post("/api/save/list", {"title_id": title})
+        check("save/list reports save_found=true for a title with live data",
+              j and j.get("ok") and j.get("save_found") is True
+              and "savedata_prospero" in (j.get("save_path") or ""),
+              "j=%s" % j)
+        check("save/list reports a non-zero save_size",
+              bool(j and (j.get("save_size") or 0) > 0), "size=%s" % (j or {}).get("save_size"))
+        st, j = c.api_post("/api/save/list", {"title_id": "CUSA99999"})
+        check("save/list reports save_found=false for an absent title",
+              j and j.get("ok") and j.get("save_found") is False, "j=%s" % j)
+
+        # ---- 15d-bis. /api/save/scan: what saves live on this console ----
+        # 这是存档页原本缺的那个端点：它列的是**存档**，不是快照。
+        st, j = c.get_json("/api/save/scan")
+        saves = (j or {}).get("saves", [])
+        # GAME00002 同时出现在 data 与 meta 两个叶下 ⇒ 去掉重复的 title id
+        ids = sorted(set(s.get("title_id") for s in saves))
+        check("POST /api/save/scan lists every title with save data",
+              st == 200 and j and j.get("ok") and ids == ["CUSA00001", "GAME00002"],
+              "st=%s ids=%s j=%s" % (st, ids, j))
+        kinds = sorted(set(s.get("kind") for s in saves))
+        check("save/scan covers both leaves (data + meta)",
+              kinds == ["savedata_prospero", "savedata_prospero_meta"],
+              "kinds=%s" % kinds)
+        one = [s for s in saves if s.get("title_id") == title]
+        check("save/scan entry carries path + size + mtime",
+              bool(one and "savedata_prospero" in one[0].get("path", "")
+                   and (one[0].get("size") or 0) > 0 and (one[0].get("mtime") or 0) > 0),
+              "first=%s" % (one[0] if one else None))
+        # 同一台机器上「扫得到」和「查得到」必须一致 —— 两处曾经用不同的层级顺序，
+        # 结果一个说有、一个说没有（而真机只有 leaf 在前那一种排法）。
+        scanned = set(ids)
+        found_by_list = set()
+        for cand in ("CUSA00001", "GAME00002"):
+            st, j2 = c.api_post("/api/save/list", {"title_id": cand})
+            if j2 and j2.get("save_found"):
+                found_by_list.add(cand)
+        check("save/scan and save/list agree on which saves exist",
+              scanned == found_by_list,
+              "scan=%s list=%s" % (sorted(scanned), sorted(found_by_list)))
 
         # ---- 15e. pkg info via form POST (front-end style) must not be 405 ----
         st, j = c.api_post("/api/pkg/info", {"path": ROOT + "/pkgs/game.pkg"})

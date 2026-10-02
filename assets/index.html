@@ -803,6 +803,36 @@ button{font:inherit;color:inherit;background:none;border:0;cursor:pointer}
   .pkginfo-cover,.pkginfo-fallback{width:100%;height:auto;aspect-ratio:1/1;max-height:260px}
   .pkginfo-grid{grid-template-columns:1fr}
 }
+
+/* ---- 任务坞：常驻右下角的多任务进度面板，可最小化成一条 ----
+   为什么是 fixed 而不是放进某个视图：解压、PKG 安装、拉取都跑很久，用户切换
+   视图时进度必须还在。⚠️ 它必须留在所有 .view 之外 —— .view.on 的
+   animation:vin 会建立包含块，position:fixed 会被钉在视图内部（删除进度窗踩过
+   同一个坑）。z-index 取 55：高于 .scrim(50)，否则一开模态框进度就被盖住。 */
+.dock{position:fixed;right:20px;bottom:20px;z-index:55;width:min(420px,92vw);
+  background:var(--page);border:1px solid var(--line-2);border-radius:var(--r-card);
+  box-shadow:0 20px 54px rgba(0,0,0,.55);overflow:hidden}
+.dock[hidden]{display:none}
+.dock-h{display:flex;align-items:center;gap:9px;padding:10px 12px;cursor:pointer;
+  background:var(--s1);border-bottom:1px solid var(--line);user-select:none}
+.dock-h b{font-size:13.5px}
+.dock-h .sp{flex:1}
+.dock-h:focus-visible{outline:2px solid var(--brand);outline-offset:-2px}
+.dock.min .dock-h{border-bottom:0}
+.dock.min .dock-b{display:none}
+.dock-b{max-height:40vh;overflow:auto;padding:11px 12px 13px;
+  display:flex;flex-direction:column;gap:12px}
+.dock-row{display:flex;flex-direction:column;gap:5px;min-width:0}
+.dock-top{display:flex;align-items:center;gap:8px;min-width:0}
+/* 名称独占剩余宽度并省略号收尾：文件名可以很长，撑开面板会把取消按钮挤出屏幕 */
+.dock-nm{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+  font-size:13px}
+.dock-sub{font-size:11.5px;line-height:1.45;overflow:hidden;text-overflow:ellipsis;
+  white-space:nowrap;font-family:var(--mono)}
+.dock .track.sm{height:6px;margin:0}
+@media (max-width:560px){
+  .dock{left:10px;right:10px;bottom:10px;width:auto}
+}
 </style>
 </head>
 <body>
@@ -1133,6 +1163,19 @@ button{font:inherit;color:inherit;background:none;border:0;cursor:pointer}
         </div>
       </div>
     </div>
+    <!-- 本机存档扫描：「有没有存档」和「有没有快照」是两件事。原来这一页只有
+         「查看快照」，一台从没备份过的机器看起来永远是空的 —— 手动敲 TITLE_ID
+         也一样，用户根本分不清「这台机器没这个存档」和「只是还没备份」。 -->
+    <div class="svlist" style="margin-top:14px">
+      <div class="svlist-h"><svg class="i" style="width:14px;height:14px"><use href="#i-save"/></svg>本机存档<span class="sp"></span>
+        <span class="num" id="svFoundCount">—</span>
+        <button class="btn sm" id="btnSvScan" style="margin-left:10px">扫描本机存档</button></div>
+      <div id="svFound">
+        <div class="snaps">
+          <div class="snap"><span class="tm">—</span><span class="why">点右侧「扫描本机存档」，列出这台机器上所有游戏留下的存档</span></div>
+        </div>
+      </div>
+    </div>
   </section>
   </section><!-- /view-saves -->
 
@@ -1290,6 +1333,24 @@ button{font:inherit;color:inherit;background:none;border:0;cursor:pointer}
           <span class="note" id="ppUpStatus" style="color:var(--fg3)">未选择文件</span>
         </div>
       </div>
+      <!-- PC 端辅助程序：serve-pkg.exe / .py 就随 payload 一起发布，从本机
+           网页直接下载（服务端对这两个后缀会带 Content-Disposition，浏览器
+           一定存盘而不是开新标签）。用 exe 的人不需要装 Python。 -->
+      <div class="fld" style="margin-top:14px;border-top:1px solid var(--line);padding-top:12px">
+        <label>PC 端辅助程序（二选一）</label>
+        <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center">
+          <a class="btn sm" id="ppDlExe" href="/serve-pkg.exe" download>下载 serve-pkg.exe（Windows 免安装）</a>
+          <a class="btn sm" id="ppDlPy" href="/serve-pkg.py" download>下载 serve-pkg.py（需装 Python）</a>
+        </div>
+        <div class="note" style="color:var(--fg3);margin-top:6px">在 PC 上双击运行它 → 回到上面的「PC 地址」填入它显示的 IP:端口 → 连接后直接点安装。</div>
+      </div>
+      <div class="fld" style="margin-top:14px;border-top:1px solid var(--line);padding-top:12px">
+        <label>PS5 暂存目录</label>
+        <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center">
+          <button type="button" class="btn sm" id="ppStaging">打开 /data/wfm/incoming 看上传与清理</button>
+          <span class="note" id="ppStageStatus" style="color:var(--fg3)">装完自动删；失败会留在那里等你看。</span>
+        </div>
+      </div>
     </div>
     <div class="dlg-f"><button class="btn" id="ppc2">关闭</button></div>
   </div>
@@ -1342,14 +1403,22 @@ button{font:inherit;color:inherit;background:none;border:0;cursor:pointer}
   </div>
 </div>
 
-<div class="scrim" id="scrimInst">
-  <div class="dlg" role="dialog" aria-modal="true" aria-labelledby="instTitle" style="max-width:440px">
-    <div class="dlg-h"><span class="pill b"><svg class="i" style="width:14px;height:14px"><use href="#i-dl"/></svg></span><b id="instTitle">正在安装…</b></div>
-    <div class="dlg-b">
-      <div class="track" style="margin:14px 0 8px"><i id="instBar" style="width:0%"></i></div>
-      <div class="dlg-f" style="border-top:0"><span class="m" id="instPct">0%</span><span class="sp"></span><span class="m" id="instState">已入队，等待安装…</span></div>
-    </div>
+<!-- 任务坞：解压 / PKG 安装 / 拉取 / fPKG 复制共用的进度面板，可最小化到角落。
+     原先每种操作各弹一个模态框（#scrimInst 等），结果是「装到哪了」只在某一
+     个弹窗里能看见，关掉就没了，多任务还会互相盖住。
+     ⚠️ 必须放在**所有 .view 之外**：.view.on 的 animation:vin 会建立包含块，
+     position:fixed 就会被钉在视图里而不是视口右下角（删除进度窗踩过同一个坑）。
+     数据源与任务视图完全同源（同一份 /api/tasks 快照），这里只渲染不发请求 ——
+     /api/tasks 每次调用都会摘掉已完结的任务，两个轮询器会互相抢走终态那一帧。 -->
+<div class="dock" id="taskDock" hidden>
+  <div class="dock-h" id="dockHead" role="button" tabindex="0" aria-expanded="true" aria-controls="dockBody">
+    <svg class="i" style="width:15px;height:15px"><use href="#i-tasks"/></svg>
+    <b>任务</b>
+    <span class="sp"></span>
+    <span class="m" id="dockSum">—</span>
+    <button class="btn sm" id="dockMin" aria-label="最小化到角落" title="最小化到角落">收起</button>
   </div>
+  <div class="dock-b" id="dockBody"></div>
 </div>
 
 <div class="toast" id="toast" hidden></div>
@@ -1369,6 +1438,9 @@ function goto(key) {
   /* 滚动容器是 main —— 切视图回顶要滚它，window.scrollTo 已经滚不到任何东西 */
   const sc = document.querySelector("main");
   if (sc) sc.scrollTop = 0; else window.scrollTo(0, 0);
+  /* 进存档页先自动扫一遍本机存档：这一页原来进来就是空的（只有「查看快照」），
+     用户会直接判定「扫描不到存档」。renderSaveSaves 自带 LIVE 判定与空态文案。 */
+  if (key === "saves") renderSaveSaves();
 }
 document.getElementById("nav").addEventListener("click", e => {
   const b = e.target.closest("button[data-view]");
@@ -1412,27 +1484,22 @@ if (!LIVE) {
 const svTitle = document.getElementById("svTitle");
 const svSnaps = document.getElementById("svSnaps");
 const svSnapCount = document.getElementById("svSnapCount");
-let saveTaskTimer = null;
-const escapeHtml = s => String(s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+/* 备份/恢复也走全局任务坞那一个轮询器（watchTask）。
+   ⚠️ 这里原来自己 setInterval 打 /api/tasks —— 两个轮询器会互相抢走终态那一帧，
+   /api/tasks 每次调用都会把已完结的任务摘掉，于是「备份完成」的 toast 有时不弹、
+   定时器也停不下来。终止条件不能再依赖「任务从列表里消失」，只能依赖终态快照。 */
 function trackSaveTask(id, label, doneMsg, doneFn) {
-  if (saveTaskTimer) clearInterval(saveTaskTimer);
-  saveTaskTimer = setInterval(async () => {
-    const j = await apiGet("/api/tasks");
-    if (!j || !j.ok) return;
-    const t = (j.tasks || []).find(x => x.id === id);
-    if (!t) return;                       // 刚入队，任务还没进列表，继续等
-    /* 状态号与 STATE_CN 同源：0 排队 / 1 进行中 / 2 暂停 / 3 完成 / 4 失败 / 5 取消。
-       （旧值 4/5 把「完成」当成「失败」，任务跑完也永远不 settle —— 轮询停不下来，
-       「备份完成」的 toast 也永远不弹。） */
-    if (t.state === 3) {                  // done
-      clearInterval(saveTaskTimer); saveTaskTimer = null;
+  watchTask(id, t => {
+    if (t.state_name === "done") {
       toast(doneMsg);
       if (doneFn) doneFn();
-    } else if (t.state >= 4) {            // failed / cancelled
-      clearInterval(saveTaskTimer); saveTaskTimer = null;
-      toast("失败：" + label);
+    } else if (t.state_name === "failed") {
+      toast("失败：" + label + (t.note ? "（" + t.note + "）" : ""));
+    } else {
+      toast("已取消：" + label);
     }
-  }, 1000);
+  });
+  if (LIVE) refreshAll();
 }
 async function renderSaveSnaps(tid) {
   const j = await apiPost("/api/save/list", { title_id: tid });
@@ -1444,13 +1511,53 @@ async function renderSaveSnaps(tid) {
   const snaps = j.snapshots || [];
   if (svSnapCount) svSnapCount.textContent = snaps.length + "";
   if (!snaps.length) {
-    svSnaps.innerHTML = '<div class="snaps"><div class="snap"><span class="tm">—</span><span class="why">这个 TITLE_ID 还没有快照</span></div></div>';
+    /* 三种「空」要分开说，否则用户没法判断下一步该干什么：
+       没存档 → 这台机器上就没这个游戏的存档，不用备份；
+       有存档没快照 → 有东西可备份，划重点让他点「备份」；
+       既没存档也没装 → TITLE_ID 可能敲错了。 */
+    const why = j.save_found
+      ? "这台机器上找到了存档（" + fmt(j.save_size) + "），但还没有快照 —— 点「备份」存档一份"
+      : "这台机器上没有 " + esc(tid) + " 的存档，TITLE_ID 可能不对，或这个游戏还没在本机运行过";
+    svSnaps.innerHTML = '<div class="snaps"><div class="snap"><span class="tm">—</span><span class="why">' + why + '</span></div></div>';
     return;
   }
   svSnaps.innerHTML = '<div class="snaps">' + snaps.map(s =>
-    '<div class="snap"><span class="tm"></span><span class="why">' + escapeHtml(s) + '</span>' +
-    '<button class="btn sm" data-snap="' + escapeHtml(s) + '">回滚</button></div>').join("") + '</div>';
+    '<div class="snap"><span class="tm"></span><span class="why">' + esc(s) + '</span>' +
+    '<button class="btn sm" data-snap="' + esc(s) + '">回滚</button></div>').join("") + '</div>';
   svSnaps.querySelectorAll("button[data-snap]").forEach(b => b.addEventListener("click", () => saveRestore(b.dataset.snap)));
+}
+/* 扫描本机存档：/api/save/scan 枚举 /user/home/<账号>/savedata_prospero/<TID>。
+   账号目录名无法从 title id 推导，只能枚举 —— 这正是手动敲 TITLE_ID 查不到的原因。 */
+async function renderSaveSaves() {
+  if (!LIVE) { toast("真机下可扫描存档"); return; }
+  const box = document.getElementById("svFound");
+  const cnt = document.getElementById("svFoundCount");
+  if (box) box.innerHTML = '<div class="snaps"><div class="snap"><span class="tm">…</span><span class="why">正在扫描 /user/home …</span></div></div>';
+  const j = await apiPost("/api/save/scan", {});
+  if (!j || !j.ok) {
+    if (box) box.innerHTML = '<div class="snaps"><div class="snap"><span class="tm">—</span><span class="why">扫描失败：服务不可用</span></div></div>';
+    if (cnt) cnt.textContent = "—";
+    return;
+  }
+  const saves = j.saves || [];
+  if (cnt) cnt.textContent = saves.length + "";
+  if (!saves.length) {
+    if (box) box.innerHTML = '<div class="snaps"><div class="snap"><span class="tm">—</span><span class="why">这台机器上没有找到任何存档目录</span></div></div>';
+    return;
+  }
+  saves.sort((a, b) => (b.mtime || 0) - (a.mtime || 0));
+  if (box) box.innerHTML = '<div class="snaps">' + saves.map(s =>
+    '<div class="snap"><span class="tm">' + esc(fsMtimeStr({ mtime: s.mtime })) + '</span>' +
+    '<span class="why">' + esc(s.title_id) + ' · ' + esc(fmt(s.size)) +
+    ' · ' + esc((s.kind || "").replace("savedata_prospero_meta", "meta")) + '</span>' +
+    '<button class="btn sm" data-fill="' + esc(s.title_id) + '">填 TITLE_ID</button>' +
+    '<button class="btn sm pri" data-bak="' + esc(s.title_id) + '">备份</button></div>').join("") + '</div>';
+  box.querySelectorAll("button[data-fill]").forEach(b => b.addEventListener("click", () => {
+    svTitle.value = b.dataset.fill; renderSaveSnaps(b.dataset.fill);
+  }));
+  box.querySelectorAll("button[data-bak]").forEach(b => b.addEventListener("click", () => {
+    svTitle.value = b.dataset.bak; saveBackup();
+  }));
 }
 async function saveBackup() {
   const tid = (svTitle.value || "").trim();
@@ -1477,6 +1584,8 @@ if (btnSvList) btnSvList.addEventListener("click", () => {
   renderSaveSnaps(t);
 });
 if (btnSvBackup) btnSvBackup.addEventListener("click", saveBackup);
+const btnSvScan = document.getElementById("btnSvScan");
+if (btnSvScan) btnSvScan.addEventListener("click", renderSaveSaves);
 
 /* ---------- 筛选控件必须真的筛 ----------
    注意：只换按下态 = 上一版被用户抓到的「假导航」。宁可少摆一个按钮，也不摆一个
@@ -1732,6 +1841,11 @@ function taskRow(t) {
 }
 
 function renderTasks(j) {
+  /* 任务坞和任务视图吃同一份快照：先喂坞，视图的早退分支就不影响它了。
+     坞的实现在下面（函数声明会提升），调用时机一定在整份脚本求值之后。 */
+  const snap = (j && j.ok && j.tasks) ? j.tasks : [];
+  if (typeof dockRender === "function") dockRender(snap);
+  if (typeof dockSettleWatched === "function") dockSettleWatched(snap);
   if (!j || !j.ok || !j.tasks) return;
   const panel = document.getElementById("recentPanel");
   if (panel) {
@@ -2673,57 +2787,165 @@ async function renderLibrary() {
   if (count) count.textContent = pkgs.length + " 个 · 全部待安装";
 }
 
-/* ---- 安装进度弹窗：/api/pkg/enqueue 拿 task_id → 轮询 /api/install/poll ---- */
-/* ---- 安装/复制 进度弹窗：/api/pkg/enqueue 拿 task_id → 轮询 /api/install/poll
-   Sony .pkg 走内核安装（进度 0..100）；fPKG 镜像走复制进 /data/homebrew
-   （进度按字节）。同一个弹窗、同一个轮询，口径由服务端 kind/total 决定。 ---- */
-const scrimInst = document.getElementById("scrimInst");
-let instTimer = null;
-function openInst(title, state, verb) {
-  if (!scrimInst) return;
-  const t = document.getElementById("instTitle"), st = document.getElementById("instState");
-  const bar = document.getElementById("instBar"), pct = document.getElementById("instPct");
-  if (t) t.textContent = "正在" + (verb || "安装") + " " + title;
-  if (st) st.textContent = state || ("已入队，等待" + (verb || "安装") + "…");
-  if (bar) bar.style.width = "0%";
-  if (pct) pct.textContent = "0%";
-  scrimInst.classList.add("on");
+/* ---- 任务坞：跑得久的操作（解压 / PKG 安装 / 拉取 / 复制）共用的进度面板 ----
+   数据源就是任务视图那一份 /api/tasks 快照，这里只渲染、不自己发请求。
+   为什么不能图省事再开一个轮询器：/api/tasks 每次调用都会把**已完结**的任务
+   摘掉，两个轮询器就会互相抢走终态那一帧 —— 谁的完成提示都不会出现。 ---- */
+const taskDock = document.getElementById("taskDock");
+const dockBody = document.getElementById("dockBody");
+const dockSum = document.getElementById("dockSum");
+let lastTasks = [];
+/* 被观察的任务：{id, onSettle(task), deadline}。终态那一帧只会出现一次
+   （api_tasks 报完就把它摘掉），所以观察者最多被唤醒一次。
+   ⚠️ 这里替代了原来「存档页自己 setInterval 打 /api/tasks」的做法：两个轮询器
+   会互相抢走终态那一帧，抢输的那个永远不会 settle —— 表现为任务跑完了却既没
+   提示、定时器也停不下来。现在全局只有一个轮询器，观察者只是它的订阅者。 */
+let watchedTasks = [];
+function watchTask(id, onSettle) {
+  const n = Number(id) || 0;
+  if (!n) return;
+  watchedTasks = watchedTasks.filter(w => w.id !== n);
+  watchedTasks.push({ id: n, onSettle, deadline: Date.now() + 15 * 60 * 1000 });
 }
-function closeInst() { if (scrimInst) scrimInst.classList.remove("on"); }
+function dockSettleWatched(tasks) {
+  if (!watchedTasks.length) return;
+  const list = tasks || [];
+  const now = Date.now();
+  const left = [];
+  for (const w of watchedTasks) {
+    const t = list.find(x => x.id === w.id);
+    if (!t) {                                   /* 还没进快照；或已被摘走 */
+      if (now < w.deadline) left.push(w);
+      continue;
+    }
+    if (t.state_name === "done" || t.state_name === "failed" || t.state_name === "cancelled") {
+      w.onSettle(t);
+    } else {
+      left.push(w);
+    }
+  }
+  watchedTasks = left;
+}
+let dockSynth = null;        /* 只存在于浏览器端的合成行（上传没有服务端任务） */
+
+function dockOpen() { if (taskDock) taskDock.hidden = false; }
+function dockToggle() {
+  if (!taskDock) return;
+  const min = taskDock.classList.toggle("min");
+  const b = document.getElementById("dockMin"), h = document.getElementById("dockHead");
+  if (b) b.textContent = min ? "展开" : "收起";
+  if (h) h.setAttribute("aria-expanded", String(!min));
+}
+function dockPct(t) {
+  if (t.state_name === "done") return 100;
+  /* 两套口径，都在 total 上归一：安装任务的 progress 已经是 0..100 的百分比
+     （worker 向系统安装器查询得到，total 恒为 100 —— 以前这里是 0，所以进度
+     条一直空着）；其余任务是字节或条目数。 */
+  const total = Number(t.total) || 0;
+  if (total > 0) return Math.min(100, Math.round(Number(t.progress) / total * 100));
+  return 0;
+}
+function dockWord(t) {
+  if (t.state_name === "done") return "完成";
+  if (t.state_name === "failed") return "失败";
+  if (t.state_name === "cancelled") return "已取消";
+  if (t.state_name === "queued") return "排队中";
+  return Number(t.total) > 0 ? dockPct(t) + "%" : "进行中";
+}
+function dockRow(t) {
+  const kind = KIND_CN[t.kind] || ["任务", "i-tasks"];
+  const st = STATE_CN[t.state_name] || [t.state_name, "n"];
+  const active = t.state_name === "running" || t.state_name === "queued";
+  /* 失败红、完成灰、进行中黄：完成任务的 note 常常是好消息（「已安装，跳过」），
+     一律涂红会读成失败。 */
+  const tone = t.state_name === "failed" ? "var(--bad)"
+    : t.state_name === "done" ? "var(--fg3)" : "var(--warn)";
+  const sub = t.note || t.current || "";
+  return '<div class="dock-row" data-id="' + t.id + '">'
+    + '<div class="dock-top">'
+    + '<svg class="i" style="width:14px;height:14px"><use href="#' + kind[1] + '"/></svg>'
+    + '<span class="pill ' + st[1] + '">' + st[0] + "</span>"
+    + '<span class="dock-nm">' + esc(t.label) + "</span>"
+    + '<span class="m">' + dockWord(t) + "</span>"
+    + (active ? '<button class="btn sm" data-cancel="' + t.id + '">取消</button>' : "")
+    + "</div>"
+    + '<div class="track sm"><i style="width:' + dockPct(t) + '%"></i></div>'
+    + (sub ? '<div class="dock-sub" style="color:' + tone + '">' + esc(sub) + "</div>" : "")
+    + "</div>";
+}
+function dockRender(tasks) {
+  if (!taskDock) return;
+  lastTasks = tasks || [];
+  const rows = lastTasks.slice().reverse().slice(0, 6).map(dockRow).join("");
+  /* 上传走的是浏览器自己的 XHR，服务端没有对应任务；不给它一行的话，从 PC 选完
+     文件之后页面上会一片安静，用户只能猜「到底传没传」。 */
+  const synth = dockSynth
+    ? dockRow({ id: -1, kind: 2, state_name: "running", label: dockSynth.label,
+                note: dockSynth.sub, total: 100, progress: Math.round(dockSynth.pct || 0) })
+    : "";
+  if (!rows && !synth) {
+    taskDock.hidden = true;
+    dockBody.innerHTML = "";
+    dockSum.textContent = "—";
+    return;
+  }
+  dockOpen();
+  dockBody.innerHTML = synth + rows;
+  const total = lastTasks.length + (dockSynth ? 1 : 0);
+  const running = lastTasks.filter(t => t.state_name === "running" || t.state_name === "queued").length
+    + (dockSynth ? 1 : 0);
+  dockSum.textContent = running ? running + " 个进行中 · 共 " + total + " 个"
+    : total + " 个任务（已完成）";
+}
+function dockSynthetic(label, sub, pct) {
+  dockSynth = { label, sub, pct };
+  dockRender(lastTasks);
+}
+function dockSyntheticClear() { dockSynth = null; dockRender(lastTasks); }
+
+/* 用户点过的安装任务完成/失败时给一次提示。 */
+function dockSettleInstall() { /* 旧名保留为空实现，逻辑已并入 dockSettleWatched */ }
+
+/* 入队成功后调用：进度交给任务坞，不再弹模态框。 */
 function pollInstall(id, title, isFpkg) {
   const verb = isFpkg ? "复制" : "安装";
-  openInst(title, null, verb);
-  if (instTimer) clearInterval(instTimer);
-  if (!id) return;                       // 后端没给 task_id 就只开弹窗，不轮询
-  instTimer = setInterval(async () => {
-    const j = await apiPost("/api/install/poll", { id });
-    if (!j || !j.ok) { if (instTimer) clearInterval(instTimer); instTimer = null; return; }
-    /* 两套口径归一：安装报 percent(0..100)，fPKG 复制报 progress/total 字节数 */
-    const p = Number(j.total) > 0
-      ? Math.round(Number(j.progress) / Number(j.total) * 100)
-      : Math.round(Number(j.percent) || 0);
-    const pct100 = Math.min(100, Math.max(0, p));
-    const bar = document.getElementById("instBar"), pct = document.getElementById("instPct");
-    if (bar) bar.style.width = pct100 + "%";
-    if (pct) pct.textContent = pct100 + "%";
-    const st = document.getElementById("instState");
-    if (st) st.textContent = j.state_name === "done" ? "完成"
-      : j.state_name === "failed" ? "失败"
-      : j.state_name === "cancelled" ? "已取消"
-      : j.state_name === "queued" ? "已入队，等待中…" : "进行中…";
-    const terminal = j.state_name === "done" || j.state_name === "failed"
-      || j.state_name === "cancelled";
-    if (j.state_name === "done" || pct100 >= 100) {
-      if (instTimer) clearInterval(instTimer); instTimer = null;
-      toast(verb === "复制" ? "已复制到 homebrew：" + title : "安装完成：" + title);
-      closeInst();
-      if (typeof renderLibrary === "function") renderLibrary();
-      if (typeof refreshAll === "function") refreshAll();
-    } else if (terminal) {
-      if (instTimer) clearInterval(instTimer); instTimer = null;
-      toast(verb + "失败：" + title);
+  const nm = title || "";
+  watchTask(id, t => {
+    if (t.state_name === "done") {
+      toast(verb === "复制" ? "已复制到 homebrew：" + nm : "安装完成：" + nm);
+    } else if (t.state_name === "failed") {
+      /* note 现在是服务端/系统安装器的原话（kstuff 未运行、InstallByPackage
+         0x… 等），照实转达 —— 不再是笼统的「安装失败」而查不到原因。 */
+      toast(verb + "失败：" + (t.note || nm));
+    } else {
+      toast(verb + "已取消：" + nm);
     }
-  }, 1000);
+    if (typeof renderLibrary === "function") renderLibrary();
+  });
+  dockOpen();
+  if (LIVE) {
+    if (id) refreshAll();     /* 立刻反映一次，别让用户等一个轮询周期 */
+    else if (typeof renderLibrary === "function") renderLibrary();
+  }
+}
+
+if (taskDock) {
+  const head = document.getElementById("dockHead");
+  const minBtn = document.getElementById("dockMin");
+  if (minBtn) minBtn.addEventListener("click", e => { e.stopPropagation(); dockToggle(); });
+  if (head) {
+    head.addEventListener("click", dockToggle);
+    head.addEventListener("keydown", e => {
+      if (e.key === "Enter" || e.key === " ") { e.preventDefault(); dockToggle(); }
+    });
+  }
+  taskDock.addEventListener("click", async e => {
+    const b = e.target.closest("[data-cancel]");
+    if (!b) return;
+    b.disabled = true;
+    const j = await apiPost("/api/task/cancel", { id: Number(b.dataset.cancel) });
+    if (!j || !j.ok) { b.disabled = false; toast("取消失败：任务可能已经结束"); }
+  });
 }
 /* 文件视图点 .pkg / fPKG 镜像 → 跳游戏库 + 进度弹窗（服务端按扩展名分流） */
 async function installPkgFromFiles(path, name) {
@@ -3001,9 +3223,12 @@ function ppUploadOne(file) {
     xhr.setRequestHeader("X-WFM-Name", encodeURIComponent(file.name));
     xhr.setRequestHeader("X-WFM-Size", String(file.size));
     xhr.upload.onprogress = e => {
-      if (e.lengthComputable && e.total > 0)
-        ppUpStatus.textContent = "上传 " + file.name + "　"
-          + Math.round(e.loaded / e.total * 100) + "%";
+      if (!e.lengthComputable || e.total <= 0) return;
+      const pct = e.loaded / e.total * 100;
+      ppUpStatus.textContent = "上传 " + file.name + "　" + Math.round(pct) + "%";
+      /* 上传是浏览器自己的 XHR，服务端没有对应任务，所以给它一行合成进度；
+         否则从 PC 选完文件之后页面上会一片安静。 */
+      dockSynthetic("上传 " + file.name, fmt(e.loaded) + " / " + fmt(e.total), pct);
     };
     xhr.onload = () => resolve(xhr.status >= 200 && xhr.status < 300);
     xhr.onerror = () => resolve(false);
@@ -3031,14 +3256,21 @@ async function ppUploadAndInstall(files) {
   if (!files || !files.length) return;
   if (!LIVE) { toast("真机下可从这台电脑安装 PKG"); return; }
   ppPick.disabled = true;
+  dockOpen();
   // 暂存目录不存在就建（已存在时报错无妨，忽略结果）
   await apiJson("/api/mkdir", { path: "/data/wfm", name: "incoming" });
   let queued = 0;
   for (const f of files) {
     ppUpStatus.textContent = "上传 " + f.name + "　0%";
+    dockSynthetic("上传 " + f.name, "0%", 0);
     const okUp = await ppUploadOne(f);
-    if (!okUp) { ppUpStatus.textContent = "上传失败：" + f.name; break; }
+    if (!okUp) {
+      ppUpStatus.textContent = "上传失败：" + f.name;
+      dockSynthetic("上传 " + f.name, "上传失败（网络中断或空间不足）", 100);
+      break;
+    }
     ppUpStatus.textContent = "入队安装 " + f.name + " …";
+    dockSynthetic("上传 " + f.name, "上传完成，正在入队…", 100);
     const title = f.name.replace(/\.(pkg|fpkg)$/i, "").trim();
     const j = await apiPost("/api/pkg/enqueue", {
       path: PKG_STAGING + "/" + f.name, title, version: ""
@@ -3051,8 +3283,13 @@ async function ppUploadAndInstall(files) {
     const taskId = Number(j.task_id) || 0;
     pollInstall(taskId, title, /\.fpkg$/i.test(f.name));
     ppCleanupWhenDone(taskId, PKG_STAGING + "/" + f.name);
+    /* 上传行到此为止：真正的安装进度由 /api/tasks 那一行接管。 */
+    dockSyntheticClear();
   }
-  ppUpStatus.textContent = queued ? "已入队 " + queued + " 个安装包" : "未入队任何文件";
+  dockSyntheticClear();
+  ppUpStatus.textContent = queued
+    ? "已入队 " + queued + " 个安装包，进度见右下角任务坞"
+    : "未入队任何文件，暂存目录里的残留可手动清理";
   ppPick.disabled = false;
   // 清空 input 只能在整批排空后：见顶部 WebKit input.value 坑注释
   try { ppFile.value = ""; } catch (e) { /* ignore */ }
@@ -3061,8 +3298,20 @@ if (ppPick) ppPick.addEventListener("click", () => ppFile.click());
 if (ppFile) ppFile.addEventListener("change", () => {
   const files = Array.from(ppFile.files || []);
   if (!files.length) return;
+  /* 上传阶段**不关弹窗**：进度和失败原因就写在这个弹窗的 ppUpStatus 上，
+     关掉它用户就什么都看不到了。整批上传+入队排空后才收起，安装进度交给任务坞。 */
+  ppUploadAndInstall(files).then(() => closePkgPc());
+});
+
+/* 暂存目录快捷入口：跳文件视图并直接进 /data/wfm/incoming。
+   「到底传上去了没有」和「装完有没有清掉」目前只能靠猜 —— 这里给个能点的地方。 */
+const ppStaging = document.getElementById("ppStaging");
+if (ppStaging) ppStaging.addEventListener("click", async () => {
   closePkgPc();
-  ppUploadAndInstall(files);
+  goto("files");
+  /* 先确保目录在（已存在时服务端报错，忽略），否则列目录直接 404。 */
+  await apiJson("/api/mkdir", { path: "/data/wfm", name: "incoming" });
+  try { fsView.go(PKG_STAGING, "local"); } catch (e) { /* ignore */ }
 });
 document.addEventListener("keydown", e => {
   if (e.key === "Escape" && scrimPkgPc.classList.contains("on")) closePkgPc();
@@ -3553,7 +3802,18 @@ async function refreshAll() {
     }
   }
 }
-if (LIVE) { fsView.refresh(); renderLibrary(); refreshAll(); setInterval(refreshAll, 2500); }
+/* 只有一个轮询器，而且节奏随「有没有任务在跑」变化：跑任务时 1.2s（进度条要
+   看起来在动），空闲时 2.5s（/api/status 每次都要重新探一遍服务与端口）。
+   ⚠️ 绝不能为了「更快」再起一个定时器打 /api/tasks —— 它每次调用都会把已完结的
+   任务摘掉，两个轮询器会互相抢走终态那一帧，完成/失败提示就永远不出现。 */
+if (LIVE) {
+  fsView.refresh(); renderLibrary(); refreshAll();
+  (function pollLoop() {
+    const busy = (lastTasks || []).some(x => x.state_name === "running" || x.state_name === "queued")
+      || !!dockSynth;
+    setTimeout(async () => { await refreshAll(); pollLoop(); }, busy ? 1200 : 2500);
+  })();
+}
 </script>
 </body>
 </html>

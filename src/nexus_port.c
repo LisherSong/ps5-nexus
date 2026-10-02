@@ -128,6 +128,36 @@ copy_tree(const char *src, const char *dst) {
   return copy_file_atomic(src, dst);
 }
 
+/* Recursive delete, best effort. Used to take the restore safety copy back out
+ * of the save leaf once it is no longer needed — leaving it there bloats the
+ * user's save directory and makes /api/save/scan list a bogus "title". */
+static void
+remove_tree(const char *path) {
+  struct stat st;
+  DIR *d;
+  struct dirent *ent;
+
+  if(lstat(path, &st)) return;
+  if(S_ISDIR(st.st_mode)) {
+    if(!(d = opendir(path))) return;
+    while((ent = readdir(d))) {
+      char child[PATH_MAX];
+      if(!strcmp(ent->d_name, ".") || !strcmp(ent->d_name, "..")) continue;
+      if(path_join(child, sizeof(child), path, ent->d_name)) continue;
+      remove_tree(child);
+    }
+    closedir(d);
+    rmdir(path);
+    return;
+  }
+  unlink(path);
+}
+
+/* Marker suffix for the in-leaf safety copy taken right before a restore
+ * overwrites the live save. Reserved: the save scan skips it so a copy left by
+ * an interrupted restore never shows up as a game title. */
+#define SAVE_PRERESTORE_SUFFIX ".wfm-pre-restore"
+
 static void
 local_ip(char *out, size_t n) {
   int fd;
@@ -473,8 +503,28 @@ save_snapshot_dir(void) {
   return (e && *e) ? e : SAVEMGR_DEFAULT_SNAPSHOT_DIR;
 }
 
-static const char *g_save_roots[] = {
+/* Where save data actually lives.
+ *
+ * ⚠️ The previous list (/user/data/<tid>/savedata_prospero, /data/<tid>/…) was a
+ * guess and matches nothing on a real console. PS5 keeps user saves under the
+ * ACCOUNT's home directory — one level deeper than a title id can express:
+ *     /user/home/<account-hex>/savedata_prospero/<TITLE_ID>       ← the data
+ *     /user/home/<account-hex>/savedata_prospero_meta/<TITLE_ID>  ← index/meta
+ * (extended storage mirrors it under /mnt/ext1/home/). The account id cannot be
+ * derived from a title id, so that level has to be ENUMERATED rather than
+ * templated — which is why the old probe could never succeed, and why a manually
+ * typed title id looked like "this console has no save for that game".
+ *
+ * The flat roots are kept as a cheap fallback (one stat each) for firmware that
+ * stores saves directly under the data partition. */
+static const char *const g_save_home_roots[] = {
+  "/user/home/", "/mnt/ext1/home/"
+};
+static const char *const g_save_flat_roots[] = {
   "/user/data/", "/data/", "/mnt/ext1/user/data/"
+};
+static const char *const g_save_leaves[] = {
+  "savedata_prospero", "savedata_prospero_meta"
 };
 
 static int
@@ -483,24 +533,209 @@ file_exists(const char *p) {
   return stat(p, &st) == 0;
 }
 
-/* Locate a title's save directory. WFM_SAVE_ROOT narrows the probe (host test). */
+/* "<base><leaf>/<title_id>" for every leaf; first hit wins. `base` ends with a
+ * slash (or is the WFM_SAVE_ROOT host-test root, see find_save_dir).
+ *
+ * ★ 层级顺序是 leaf 在前、title id 在后 —— 真机就是
+ *     /user/home/<account-hex>/savedata_prospero/<TITLE_ID>
+ * （psdevwiki Save Data + gbatemp 实机 FTP 双源确认）。曾经写成
+ * <base><title_id>/<leaf>，在真机上永远 stat 不到 ⇒ 备份/恢复与「有没有存档」
+ * 一律落到「找不到存档」，手动敲 TITLE_ID 也一样 —— 正是用户报的现象。
+ * 这里的顺序必须与 scan_save_base() 保持一致：同一个存档不允许一处说有、
+ * 一处说没有。 */
 static int
-find_save_dir(const char *title_id, char *out, size_t outsz) {
-  const char *env = getenv("WFM_SAVE_ROOT");
+probe_save_leaves(const char *base, const char *title_id, char *out,
+                  size_t outsz) {
+  size_t i;
 
-  if(env && *env) {
-    snprintf(out, outsz, "%s/%s/savedata_prospero", env, title_id);
-    if(file_exists(out)) return 1;
-    snprintf(out, outsz, "%s/%s", env, title_id);
-    return file_exists(out);
-  }
-  for(size_t i = 0; i < sizeof(g_save_roots) / sizeof(g_save_roots[0]); i++) {
-    snprintf(out, outsz, "%s%s/savedata_prospero", g_save_roots[i], title_id);
-    if(file_exists(out)) return 1;
-    snprintf(out, outsz, "%s%s", g_save_roots[i], title_id);
+  for(i = 0; i < sizeof(g_save_leaves) / sizeof(g_save_leaves[0]); i++) {
+    int n = snprintf(out, outsz, "%s%s/%s", base, g_save_leaves[i], title_id);
+    if(n < 0 || (size_t)n >= outsz) continue;
     if(file_exists(out)) return 1;
   }
   return 0;
+}
+
+/* Flat roots = firmware variants that keep saves straight under the data
+ * partition. Both orders get one stat each instead of betting on one: this is
+ * only a cheap fallback, and a miss here is indistinguishable from "no save". */
+static int
+probe_save_flat(const char *root, const char *title_id, char *out, size_t outsz) {
+  size_t i;
+  int n;
+
+  if(probe_save_leaves(root, title_id, out, outsz)) return 1;
+  for(i = 0; i < sizeof(g_save_leaves) / sizeof(g_save_leaves[0]); i++) {
+    n = snprintf(out, outsz, "%s%s/%s", root, title_id, g_save_leaves[i]);
+    if(n > 0 && (size_t)n < outsz && file_exists(out)) return 1;
+  }
+  n = snprintf(out, outsz, "%s%s", root, title_id);
+  if(n > 0 && (size_t)n < outsz && file_exists(out)) return 1;
+  return 0;
+}
+
+/* Walk one /user/home level — the account directory is the part we do not know. */
+static int
+probe_save_home(const char *home_root, const char *title_id, char *out,
+                size_t outsz) {
+  DIR *d = opendir(home_root);
+  struct dirent *e;
+  char base[PATH_MAX];
+  int found = 0;
+
+  if(!d) return 0;
+  while(!found && (e = readdir(d))) {
+    if(e->d_name[0] == '.') continue;
+    if(snprintf(base, sizeof(base), "%s%s/", home_root, e->d_name) >=
+       (int)sizeof(base)) continue;
+    found = probe_save_leaves(base, title_id, out, outsz);
+  }
+  closedir(d);
+  return found;
+}
+
+/* Locate a title's live save directory. WFM_SAVE_ROOT narrows the probe to a
+ * single account home (host test). */
+static int
+find_save_dir(const char *title_id, char *out, size_t outsz) {
+  const char *env = getenv("WFM_SAVE_ROOT");
+  size_t i;
+
+  if(!title_id || !*title_id) return 0;
+  if(env && *env) {
+    char base[PATH_MAX];
+    size_t n = strlen(env);
+    if(snprintf(base, sizeof(base), "%s%s", env,
+                (n && env[n - 1] == '/') ? "" : "/") < (int)sizeof(base) &&
+       probe_save_leaves(base, title_id, out, outsz)) return 1;
+    snprintf(out, outsz, "%s/%s", env, title_id);
+    return file_exists(out);
+  }
+  for(i = 0; i < sizeof(g_save_home_roots) / sizeof(g_save_home_roots[0]); i++) {
+    if(probe_save_home(g_save_home_roots[i], title_id, out, outsz)) return 1;
+  }
+  for(i = 0; i < sizeof(g_save_flat_roots) / sizeof(g_save_flat_roots[0]); i++) {
+    if(probe_save_flat(g_save_flat_roots[i], title_id, out, outsz)) return 1;
+  }
+  return 0;
+}
+
+/* Recursive size of a save directory. A save is a handful of small files; this
+ * only labels a row in the UI, so an unreadable entry is skipped instead of
+ * failing the whole scan. */
+static unsigned long long
+save_dir_size(const char *path) {
+  DIR *d = opendir(path);
+  struct dirent *e;
+  unsigned long long total = 0;
+
+  if(!d) return 0;
+  while((e = readdir(d))) {
+    char child[PATH_MAX];
+    struct stat st;
+
+    if(!strcmp(e->d_name, ".") || !strcmp(e->d_name, "..")) continue;
+    if(snprintf(child, sizeof(child), "%s/%s", path, e->d_name) >=
+       (int)sizeof(child)) continue;
+    if(lstat(child, &st)) continue;
+    total += S_ISDIR(st.st_mode) ? save_dir_size(child)
+                                 : (unsigned long long)st.st_size;
+  }
+  closedir(d);
+  return total;
+}
+
+/* Emit every title directory under "<base><leaf>". */
+static void
+scan_save_base(const char *base, strbuf_t *b, int *first) {
+  size_t l;
+
+  for(l = 0; l < sizeof(g_save_leaves) / sizeof(g_save_leaves[0]); l++) {
+    char leaf_dir[PATH_MAX];
+    DIR *titles;
+    struct dirent *td;
+
+    if(snprintf(leaf_dir, sizeof(leaf_dir), "%s%s", base, g_save_leaves[l]) >=
+       (int)sizeof(leaf_dir)) continue;
+    if(!(titles = opendir(leaf_dir))) continue;
+    while((td = readdir(titles))) {
+      char title_dir[PATH_MAX];
+      struct stat st;
+
+      if(td->d_name[0] == '.') continue;
+      /* 恢复前的安全副本住在这个叶里，它不是「一个游戏」（见上面那个 #define） */
+      {
+        size_t nl = strlen(td->d_name);
+        size_t sl = strlen(SAVE_PRERESTORE_SUFFIX);
+        if(nl > sl && !strcmp(td->d_name + nl - sl, SAVE_PRERESTORE_SUFFIX))
+          continue;
+      }
+      if(snprintf(title_dir, sizeof(title_dir), "%s/%s", leaf_dir, td->d_name) >=
+         (int)sizeof(title_dir)) continue;
+      if(lstat(title_dir, &st) || !S_ISDIR(st.st_mode)) continue;
+      if(!*first) strbuf_append(b, ",");
+      *first = 0;
+      strbuf_append(b, "{\"title_id\":");
+      json_escape(b, td->d_name);
+      strbuf_append(b, ",\"path\":");
+      json_escape(b, title_dir);
+      strbuf_printf(b, ",\"size\":%llu,\"mtime\":%lld,\"kind\":",
+                    save_dir_size(title_dir), (long long)st.st_mtime);
+      json_escape(b, g_save_leaves[l]);
+      strbuf_append(b, "}");
+    }
+    closedir(titles);
+  }
+}
+
+/* A home root holds one directory per account; every account is a base. */
+static void
+scan_save_accounts(const char *home_root, strbuf_t *b, int *first) {
+  DIR *d = opendir(home_root);
+  struct dirent *e;
+  char base[PATH_MAX];
+
+  if(!d) return;
+  while((e = readdir(d))) {
+    if(e->d_name[0] == '.') continue;
+    if(snprintf(base, sizeof(base), "%s%s/", home_root, e->d_name) >=
+       (int)sizeof(base)) continue;
+    scan_save_base(base, b, first);
+  }
+  closedir(d);
+}
+
+/* Every title with save data on this console.
+ *
+ * The save page had no way to answer "what is on here": its only endpoint was
+ * /api/save/list, which lists SNAPSHOTS — the things you already backed up — so
+ * a console that had never been backed up showed an empty page no matter what.
+ * This is the scan that page was missing, and it is also what makes a manually
+ * typed title id answerable (see api_save_list's save_found). */
+enum MHD_Result
+api_save_scan(struct MHD_Connection *conn, const char *body, size_t body_size) {
+  const char *env = getenv("WFM_SAVE_ROOT");
+  strbuf_t b = {0};
+  int first = 1;
+  size_t i;
+
+  (void)body;
+  (void)body_size;
+
+  strbuf_append(&b, "{\"ok\":true,\"saves\":[");
+  if(env && *env) {
+    /* Host test: one account home. */
+    char base[PATH_MAX];
+    size_t n = strlen(env);
+    if(snprintf(base, sizeof(base), "%s%s", env,
+                (n && env[n - 1] == '/') ? "" : "/") < (int)sizeof(base))
+      scan_save_base(base, &b, &first);
+  } else {
+    for(i = 0; i < sizeof(g_save_home_roots) / sizeof(g_save_home_roots[0]); i++)
+      scan_save_accounts(g_save_home_roots[i], &b, &first);
+  }
+  strbuf_append(&b, "]}");
+  return send_buffer(conn, MHD_HTTP_OK, b.data, "application/json");
 }
 
 /* Escalate to the save AuthID. PS5-only: it drives kernel ucred, which the host
@@ -529,7 +764,23 @@ api_save_list(struct MHD_Connection *conn, const char *body, size_t body_size) {
     return send_json_error(conn, MHD_HTTP_BAD_REQUEST, "invalid title id");
   }
   snprintf(dir, sizeof(dir), "%s/%s", save_snapshot_dir(), tid);
-  strbuf_append(&b, "{\"ok\":true,\"snapshots\":[");
+  strbuf_append(&b, "{\"ok\":true,\"title_id\":");
+  json_escape(&b, tid);
+  /* 「有没有存档」和「有没有快照」是两件不同的事。只报 snapshots 的时候，一台
+     从没备份过的机器看起来永远是「这台机器上没有这个游戏的存档」——手动输入
+     TITLE_ID 也一样是空的，用户根本无法区分「没存档」和「只是还没备份」。 */
+  {
+    char live[PATH_MAX];
+    struct stat st;
+    int found = find_save_dir(tid, live, sizeof(live)) == 1 &&
+                !lstat(live, &st) && S_ISDIR(st.st_mode);
+    strbuf_append(&b, ",\"save_found\":");
+    strbuf_append(&b, found ? "true" : "false");
+    strbuf_append(&b, ",\"save_path\":");
+    json_escape(&b, found ? live : "");
+    strbuf_printf(&b, ",\"save_size\":%llu", found ? save_dir_size(live) : 0ULL);
+  }
+  strbuf_append(&b, ",\"snapshots\":[");
   if((d = opendir(dir))) {
     while((ent = readdir(d))) {
       if(!strcmp(ent->d_name, ".") || !strcmp(ent->d_name, "..")) continue;
@@ -586,8 +837,11 @@ save_restore_worker(void *arg) {
     task_update(task, TASK_FAILED, snap, 0, "snapshot not found");
     return NULL;
   }
-  snprintf(bak, sizeof(bak), "%s.wfm-pre-restore", dst);
-  unlink(bak);
+  snprintf(bak, sizeof(bak), "%s" SAVE_PRERESTORE_SUFFIX, dst);
+  /* 上一轮的残留（进程被杀）/ 上一次失败的旧副本，先清干净再拍新的。
+     ⚠️ 这里原来是 unlink()：对**目录**恒失败，所以安全副本一旦落地就再也不走，
+     越攒越多、还会被 /api/save/scan 当成一个「游戏」。 */
+  remove_tree(bak);
   if(copy_tree(dst, bak)) {
     task_update(task, TASK_FAILED, dst, 0, "could not safety-snapshot current save");
     return NULL;
@@ -597,6 +851,9 @@ save_restore_worker(void *arg) {
     task_update(task, TASK_FAILED, dst, 0, "restore failed, rolled back");
     return NULL;
   }
+  /* 回写成功 = 这次恢复已经结束，安全副本的使命完成：快照才是长期的备份，
+     副本留在存档叶里只会占地方（而且用户会把它当成第二个存档）。 */
+  remove_tree(bak);
   task_update(task, TASK_DONE, dst, 0, NULL);
   return NULL;
 }

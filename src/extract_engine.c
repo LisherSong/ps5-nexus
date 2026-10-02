@@ -17,9 +17,14 @@
 #include "sevenz_extract.h"
 
 #include <ctype.h>
+#include <dirent.h>
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
+#include <time.h>
+#include <unistd.h>
 
 /* --- name matching (MinGW has no strcasecmp for our purposes under -Wall) --- */
 
@@ -105,7 +110,9 @@ glue_cancel(void *userdata) {
 static void
 glue_progress(void *userdata, const zipx_progress_t *p) {
   const glue_t *g = (const glue_t *)userdata;
-  if(g->req->progress) g->req->progress(p->bytes_done, g->req->ctx);
+  if(g->req->progress)
+    g->req->progress(p->phase, p->bytes_done, p->bytes_total, p->current,
+                     g->req->ctx);
 }
 
 static zipx_status_t
@@ -131,6 +138,90 @@ run_engine(int kind, const char *path, const char *dst,
   }
 }
 
+/* --- stale staging sweep ---------------------------------------------------
+ * The engines stage into `.wfm-extract-<pid>-<stamp>-<n>` inside the
+ * destination's PARENT and publish by renaming; they always clean the directory
+ * up on the way out. A payload that is killed mid-extraction — a redeploy, a
+ * console reboot, the process replaced by a newer build — leaves the directory
+ * behind with nobody left to remove it, and the user just sees a mysterious
+ * dot-folder full of half-extracted files sitting next to the archive with no
+ * explanation. That folder can never be published by a later run (its name
+ * carries the dead process's pid), so it is pure garbage.
+ *
+ * A fresh extract into the same parent is the one moment we know that parent is
+ * in play, so that is where orphans are collected. The age gate is what keeps
+ * this safe: a concurrently running extraction owns a directory whose mtime is
+ * seconds old, so only entries older than an hour are touched.
+ *
+ * The engines each carry a private path_parent(); this file cannot see those,
+ * hence the small local copy. */
+#define NEXUS_STAGING_PREFIX ".wfm-extract-"
+#define NEXUS_STAGING_TTL_SEC (60 * 60)
+
+static int
+split_parent(const char *path, char *out, size_t out_size) {
+  const char *slash;
+
+  if(!path || path[0] != '/') return -1;
+  slash = strrchr(path, '/');
+  if(slash == path) {
+    if(out_size < 2) return -1;
+    out[0] = '/';
+    out[1] = 0;
+    return 0;
+  }
+  if((size_t)(slash - path) >= out_size) return -1;
+  memcpy(out, path, (size_t)(slash - path));
+  out[slash - path] = 0;
+  return 0;
+}
+
+static void
+remove_tree_quiet(const char *path) {
+  DIR *d = opendir(path);
+  struct dirent *e;
+
+  if(d) {
+    while((e = readdir(d))) {
+      char child[PATH_MAX];
+      struct stat st;
+
+      if(!strcmp(e->d_name, ".") || !strcmp(e->d_name, "..")) continue;
+      if((size_t)snprintf(child, sizeof(child), "%s/%s", path, e->d_name) >=
+         sizeof(child)) continue;
+      if(!lstat(child, &st) && S_ISDIR(st.st_mode)) remove_tree_quiet(child);
+      else unlink(child);
+    }
+    closedir(d);
+  }
+  rmdir(path);
+}
+
+static void
+sweep_stale_staging(const char *dst_dir) {
+  char parent[PATH_MAX];
+  DIR *d;
+  struct dirent *e;
+  time_t now = time(NULL);
+
+  if(!dst_dir || !dst_dir[0]) return;
+  if(split_parent(dst_dir, parent, sizeof(parent))) return;
+  if(!(d = opendir(parent))) return;
+  while((e = readdir(d))) {
+    char full[PATH_MAX];
+    struct stat st;
+
+    if(strncmp(e->d_name, NEXUS_STAGING_PREFIX,
+               strlen(NEXUS_STAGING_PREFIX))) continue;
+    if((size_t)snprintf(full, sizeof(full), "%s/%s", parent, e->d_name) >=
+       sizeof(full)) continue;
+    if(lstat(full, &st) || !S_ISDIR(st.st_mode)) continue;
+    if(now - st.st_mtime < NEXUS_STAGING_TTL_SEC) continue;
+    remove_tree_quiet(full);
+  }
+  closedir(d);
+}
+
 /* --- entry point --------------------------------------------------------- */
 
 nexus_err_t
@@ -153,6 +244,11 @@ nexus_extract(const char *archive_path, const char *dst_dir,
   }
   memset(&res, 0, sizeof(res));
   g.req = req;
+
+  /* Collect any orphaned staging directory from a previous run that was killed
+   * before it could publish. Cheap (one opendir of this destination's parent)
+   * and the only point at which we know the parent is about to be used. */
+  if(dst_dir && dst_dir[0]) sweep_stale_staging(dst_dir);
 
   vrc = zipx_volume_detect(archive_path, &vol, &vol_err);
   kind = vrc > 0 ? volume_format(&vol) : -1;

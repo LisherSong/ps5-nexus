@@ -1,3 +1,4 @@
+#include <errno.h>
 #include <pthread.h>
 #include <signal.h>
 #include <stdio.h>
@@ -15,6 +16,7 @@
 #include "filemgr.h"
 #include "filemgr_internal.h"
 #include "json_util.h"
+#include "pkg_stream.h"
 #include "websrv.h"
 
 #define REQUEST_BODY_MAX (4 * 1024 * 1024)
@@ -340,6 +342,33 @@ websrv_listen(unsigned short port) {
   }
 
   while(!g_stop_requested) {
+    fd_set rfds;
+    struct timeval tv;
+    int ready;
+
+    /* The console's own installer pulls the package through the loopback stream
+     * server in the background, so something has to keep it fed. This accept
+     * loop is the only place that happens — src/pkg_stream.c is deliberately
+     * single-threaded and pumped, never threaded (see its header). The call is
+     * a no-op until a package is published. */
+    pkg_stream_tick();
+
+    /* ⚠️ A bare blocking accept() would starve the stream: the pump above only
+     * runs between connections. A 5 ms poll costs 200 wakeups/s and still
+     * leaves the accept path immediate (select() returns as soon as a client
+     * connects). */
+    FD_ZERO(&rfds);
+    FD_SET(srvfd, &rfds);
+    tv.tv_sec = 0;
+    tv.tv_usec = 5000;
+    ready = select(srvfd + 1, &rfds, NULL, NULL, &tv);
+    if(ready < 0) {
+      if(errno == EINTR) continue;
+      if(!g_stop_requested) perror("select");
+      break;
+    }
+    if(ready == 0) continue;
+
     addr_len = sizeof(client_addr);
     if((connfd = accept(srvfd, (struct sockaddr *)&client_addr, &addr_len)) < 0) {
       if(!g_stop_requested) perror("accept");

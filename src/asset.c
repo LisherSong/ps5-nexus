@@ -81,6 +81,29 @@ asset_register(const char* path, const void* data, size_t size,
 }
 
 
+/**
+ * Assets that are downloads rather than part of the UI.
+ *
+ * The payload's web root also hands out the PC-side helper (serve-pkg.py /
+ * serve-pkg.exe). PS5 WebKit happily renders a text response in a new tab even
+ * when the user clicked a download link, and .exe has no handler registered at
+ * all — so those two are given an explicit attachment disposition and the
+ * browser saves them with the right file name.
+ **/
+static int
+asset_is_download(const char *path) {
+  static const char *const exts[] = { ".exe", ".py" };
+  size_t plen = strlen(path);
+  size_t i;
+
+  for(i = 0; i < sizeof(exts) / sizeof(exts[0]); i++) {
+    size_t elen = strlen(exts[i]);
+    if(plen > elen && !strcasecmp(path + plen - elen, exts[i])) return 1;
+  }
+  return 0;
+}
+
+
 enum MHD_Result
 asset_request(struct MHD_Connection *conn, const char* url) {
   unsigned int status = MHD_HTTP_NOT_FOUND;
@@ -111,6 +134,20 @@ asset_request(struct MHD_Connection *conn, const char* url) {
     }
     if(encoding) {
       MHD_add_response_header(resp, MHD_HTTP_HEADER_CONTENT_ENCODING, encoding);
+    }
+    if(status == MHD_HTTP_OK && asset_is_download(path)) {
+      static const char prefix[] = "attachment; filename=\"";
+      char disp[PATH_MAX];
+      size_t n = strlen(prefix);
+      size_t rest = strlen(path) - 1;   /* skip the leading '/' */
+
+      if(n + rest + 2 <= sizeof(disp)) {
+        memcpy(disp, prefix, n);
+        memcpy(disp + n, path + 1, rest);
+        disp[n + rest] = '"';
+        disp[n + rest + 1] = 0;
+        MHD_add_response_header(resp, MHD_HTTP_HEADER_CONTENT_DISPOSITION, disp);
+      }
     }
     ret = websrv_queue_response(conn, status, resp);
     MHD_destroy_response(resp);

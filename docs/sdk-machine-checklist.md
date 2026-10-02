@@ -81,6 +81,17 @@ URL 解析五种形式（`smb://`/`nfs://`/`//host/share`/裸 `host/share`/`host
 - 🆕 **loopback stream 安装真的能装**（2026-09-30 落地，7 条真机待核，见 `docs/pkg-install-without-usb.md` §7.5）：①系统安装器**接受非标准端口的 loopback uri** 吗（参考实现写死 18841，我们优先用它、回退临时端口）；②`sceAppInstUtilInstallByPackage` 是否**在本进程内返回**（参考实现为此专门开 helper 进程，我们直调 ⇒ 若挂死会带走整个 payload，这是本项目唯一这类风险点）；③`appinst_status_t` **尾部字段偏移**（只有头部被跨源证实）；④真**取消**符号（未知，故未调用，只停止喂流）；⑤**局域网离线时是否仍报 `0x80B21121`**（`/data` 与 SMB **没有**参考实现那种回退可用）；⑥`GetInstallStatus` 轮询频率上限（我们节流 300 ms，是估计值）；⑦装完后 `unpublish` 的时机（早于主机读完最后一块会失败）。
 - **pkg_installer 已装预检**：重复安装同一 fPKG 时预检拦截行为符合预期 —— 现应表现为任务 **DONE + 备注「already installed」**（不是失败）。
 - **savemgr**：强制快照（无开关可跳过）/ 原子回写 / 失败回滚 / 二次确认；mount 串行锁；`/savedata_prospero/` 直接挂会 EPIPE ⇒ 先复制 `/data` 再挂、卸后回写；快照落 `/data/savesnap/`（非 `/data/save_files/`，garlic-worker 会 unlink 清空）。
+- 🆕🪤 **存档在真机上的路径层级不能写反（2026-10-02 修正，双源确认）**：
+  `/user/home/<账号hex>/savedata_prospero/<TITLE_ID>`（ext 存储镜像到 `/mnt/ext1/home/`），
+  **leaf 在前、title id 在后**。psdevwiki（Save Data）+ gbatemp 实机 FTP 双源一致。
+  ⚠️ 本仓 `probe_save_leaves()` 曾经写成 `<账号>/<TITLE_ID>/savedata_prospero` ⇒ 真机上**永远 stat 不到**
+  ⇒ 备份/恢复与「有没有存档」一律落到「找不到存档」，**手动敲 TITLE_ID 也一样**（= 用户 2026-10-02 报的现象）。
+  **账号 hex 无法从 title id 推导 ⇒ 这一级必须枚举目录**（`probe_save_home` / `scan_save_accounts`），
+  不能拼字符串。真机必核：`/api/save/scan` 能列出存档、`/api/save/list` 的 `save_found=true`、
+  且两者对「哪些存档存在」的答案必须一致（同一份代码里两处用不同层级顺序 = 一处说有、一处说没有）。
+- 🆕 **恢复前安全副本不许留在存档叶里（2026-10-02 修）**：`<存档目录>.wfm-pre-restore` 是回滚源，
+  回写成功后必须删掉（原来是 `unlink()`：对目录恒失败 ⇒ 副本永不回收、还会被 `/api/save/scan`
+  当成一个「游戏」列出来）。真机核：恢复后存档叶里只剩该 title 一个目录。
 - **worker 任务流真机回归**：fetch/install/extract 各类任务 DONE、取消不留半截产物、shutdown 不 commit（宿主已验逻辑的真机端到端）。
 - **form `%2F` 落盘缺口修复回归**（Session 15 已修）：真机用浏览器走 `/api/fs/list`(path)、`/api/extract`(path/dst_dir)、`/api/pkg/scan`(root)、`/api/pkg/enqueue`(path)、`/api/fetch`(src/dst) 各带 `/` 的路径，确认落盘路径正确。
 

@@ -14,19 +14,35 @@
  * name, and the one honest refusal ('x.rar.001' sets, which unrar cannot open
  * because it chains 'x.partNN.rar' itself).
  *
- * `progress` / `cancel` may be NULL. `progress` is called with the number of
- * bytes written so far; returning non-zero aborts the unpack (the engines are
- * also polled through `cancel`, which is the cheaper channel). */
+ * `progress` / `cancel` may be NULL.
+ *
+ * progress() gets the phase, the running byte count AND the total the engine
+ * learned during its scan pass, plus the entry currently being written.
+ * Forwarding the byte count alone (what this used to do) left the task centre
+ * with no denominator, so every extraction bar sat at 0 % and the only honest
+ * thing the UI could show was a spinner. Returning non-zero aborts the unpack
+ * (the engines are also polled through `cancel`, which is the cheaper channel).
+ * During NEXUS_PHASE_SCAN `total` is still growing — the caller must not
+ * publish it yet. */
 #include "nexus_common.h"
+
+typedef enum {
+  NEXUS_PHASE_SCAN = 0,
+  NEXUS_PHASE_EXTRACT = 1,
+  NEXUS_PHASE_PUBLISH = 2,
+  NEXUS_PHASE_CLEANUP = 3
+} nexus_extract_phase_t;
+
+typedef int (*nexus_extract_progress_fn)(int phase, uint64_t done,
+                                         uint64_t total, const char *current,
+                                         void *ctx);
+typedef int (*nexus_extract_cancel_fn)(void *ctx);
 
 typedef enum {
   NEXUS_CONFLICT_FAIL = 0,
   NEXUS_CONFLICT_OVERWRITE = 1,
   NEXUS_CONFLICT_MERGE = 2
 } nexus_conflict_t;
-
-typedef int (*nexus_extract_progress_fn)(uint64_t written, void *ctx);
-typedef int (*nexus_extract_cancel_fn)(void *ctx);
 
 typedef struct {
   nexus_conflict_t           conflict;

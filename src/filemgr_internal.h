@@ -88,6 +88,12 @@ int task_cancel_requested(file_task_t *task);
 file_task_t *find_task_locked(unsigned long id);
 void task_update(file_task_t *task, task_state_t state, const char *current,
                  unsigned long long add_done, const char *error);
+/* Absolute-progress variant. Engines and the console installer report a
+ * running total ("3.2 GB of 7.1 GB", "42 %"), not a delta, so converting to
+ * task_update()'s additive form would mean the caller keeps a shadow counter
+ * that can drift. total == 0 means "not known yet" and leaves it alone. */
+void task_set_progress(file_task_t *task, unsigned long long done,
+                       unsigned long long total, const char *current);
 void record_task_completion_locked(file_task_t *task, time_t completed_at);
 
 /* Unified request parameter reader: JSON body -> form body -> GET query, so a
@@ -175,6 +181,8 @@ enum MHD_Result api_status(struct MHD_Connection *conn, const char *body,
                            size_t body_size);
 enum MHD_Result api_fetch(struct MHD_Connection *conn, const char *body,
                           size_t body_size);
+enum MHD_Result api_save_scan(struct MHD_Connection *conn, const char *body,
+                              size_t body_size);
 enum MHD_Result api_save_list(struct MHD_Connection *conn, const char *body,
                               size_t body_size);
 enum MHD_Result api_save_backup(struct MHD_Connection *conn, const char *body,
