@@ -580,6 +580,16 @@ button{font:inherit;color:inherit;background:none;border:0;cursor:pointer}
 .space{display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;font-size:13px;color:var(--fg2);border-top:1px solid var(--line);padding-top:16px}
 .space b{font-family:var(--mono);font-variant-numeric:tabular-nums;color:var(--fg)}
 .dlg-f{display:flex;gap:10px;justify-content:flex-end;padding:18px 24px 22px}
+/* 「从 PC 安装」比别的弹窗长（地址 + 状态 + 目录网格 + 两条辅助区）。整条 `.dlg`
+   一起滚动会把底部推出屏幕：实测 800px 高的窗口里，「下载 serve-pkg.exe」需要
+   往下滚 **444px** 才看得见 —— 那就等于没有这个入口。
+   ⇒ 这个弹窗头/尾固定、只让中间滚，两条辅助入口搬到常驻底栏。 */
+#scrimPkgPc .dlg{display:flex;flex-direction:column;overflow:hidden}
+#scrimPkgPc .dlg-h,#scrimPkgPc .dlg-f{flex:none}
+#scrimPkgPc .dlg-b{flex:1;min-height:0;overflow:auto}
+#ppFoot{flex-direction:column;align-items:stretch;gap:9px}
+#ppFoot .prow{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+#ppFoot .phint{font-size:12px;line-height:1.55;color:var(--fg3)}
 
 /* ---------- 轻提示 toast（诚实反馈的最小落点：真机下无契约的动作给可见文案） ---------- */
 .toast{position:fixed;left:50%;bottom:32px;transform:translate(-50%,10px);
@@ -729,6 +739,10 @@ button{font:inherit;color:inherit;background:none;border:0;cursor:pointer}
   padding:10px 13px;border:1px solid var(--line);border-radius:var(--r-input);background:var(--s3);font-size:12.5px}
 .snap .tm{font:11.5px var(--mono);color:var(--fg3);font-variant-numeric:tabular-nums}
 .snap .why{color:var(--fg2);min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+/* `.snap` 是**三列**网格（tm / why / 按钮）。两按钮各行一个就会成为第 4 个子项、
+   被挤到隐式第二行的第 1 列 —— 存档扫描行正是这样（「备份」掉到名字下面）。
+   按钮必须**包在一个容器里**当第 3 列。 */
+.snap .acts2{display:flex;gap:8px;flex-shrink:0}
 .empty{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;
   min-height:352px;padding:34px 26px;text-align:center;color:var(--fg3)}
 .empty svg{width:34px;height:34px;opacity:.55}
@@ -1333,26 +1347,21 @@ button{font:inherit;color:inherit;background:none;border:0;cursor:pointer}
           <span class="note" id="ppUpStatus" style="color:var(--fg3)">未选择文件</span>
         </div>
       </div>
-      <!-- PC 端辅助程序：serve-pkg.exe / .py 就随 payload 一起发布，从本机
-           网页直接下载（服务端对这两个后缀会带 Content-Disposition，浏览器
-           一定存盘而不是开新标签）。用 exe 的人不需要装 Python。 -->
-      <div class="fld" style="margin-top:14px;border-top:1px solid var(--line);padding-top:12px">
-        <label>PC 端辅助程序（二选一）</label>
-        <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center">
-          <a class="btn sm" id="ppDlExe" href="/serve-pkg.exe" download>下载 serve-pkg.exe（Windows 免安装）</a>
-          <a class="btn sm" id="ppDlPy" href="/serve-pkg.py" download>下载 serve-pkg.py（需装 Python）</a>
-        </div>
-        <div class="note" style="color:var(--fg3);margin-top:6px">在 PC 上双击运行它 → 回到上面的「PC 地址」填入它显示的 IP:端口 → 连接后直接点安装。</div>
-      </div>
-      <div class="fld" style="margin-top:14px;border-top:1px solid var(--line);padding-top:12px">
-        <label>PS5 暂存目录</label>
-        <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center">
-          <button type="button" class="btn sm" id="ppStaging">打开 /data/wfm/incoming 看上传与清理</button>
-          <span class="note" id="ppStageStatus" style="color:var(--fg3)">装完自动删；失败会留在那里等你看。</span>
-        </div>
-      </div>
     </div>
-    <div class="dlg-f"><button class="btn" id="ppc2">关闭</button></div>
+    <!-- 底栏常驻（不跟随中间滚动）：PC 端辅助程序 serve-pkg.exe / .py 就随 payload
+         一起发布，从本机网页直接下载（服务端对这两个后缀会带 Content-Disposition，
+         浏览器一定存盘而不是开新标签）。用 exe 的人不需要装 Python。
+         暂存目录入口也放这里 —— 装完自动清理，但失败时会留在那儿等你看。 -->
+    <div class="dlg-f" id="ppFoot">
+      <div class="prow">
+        <a class="btn sm" id="ppDlExe" href="/serve-pkg.exe" download>下载 serve-pkg.exe（Windows 免安装）</a>
+        <a class="btn sm" id="ppDlPy" href="/serve-pkg.py" download>下载 serve-pkg.py（需装 Python）</a>
+        <button type="button" class="btn sm" id="ppStaging">暂存目录 /data/wfm/incoming</button>
+        <span class="sp"></span>
+        <button class="btn" id="ppc2">关闭</button>
+      </div>
+      <div class="phint" id="ppStageStatus">在 PC 上双击 exe → 回到上面「PC 地址」填它显示的 IP:端口 → 连接后点安装。上传的包先落在暂存目录，装完自动删；失败会留着等你看。</div>
+    </div>
   </div>
 </div>
 
@@ -1550,8 +1559,9 @@ async function renderSaveSaves() {
     '<div class="snap"><span class="tm">' + esc(fsMtimeStr({ mtime: s.mtime })) + '</span>' +
     '<span class="why">' + esc(s.title_id) + ' · ' + esc(fmt(s.size)) +
     ' · ' + esc((s.kind || "").replace("savedata_prospero_meta", "meta")) + '</span>' +
+    '<span class="acts2">' +
     '<button class="btn sm" data-fill="' + esc(s.title_id) + '">填 TITLE_ID</button>' +
-    '<button class="btn sm pri" data-bak="' + esc(s.title_id) + '">备份</button></div>').join("") + '</div>';
+    '<button class="btn sm pri" data-bak="' + esc(s.title_id) + '">备份</button></span></div>').join("") + '</div>';
   box.querySelectorAll("button[data-fill]").forEach(b => b.addEventListener("click", () => {
     svTitle.value = b.dataset.fill; renderSaveSnaps(b.dataset.fill);
   }));
