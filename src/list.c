@@ -82,6 +82,24 @@ nas_list(struct MHD_Connection *conn, const char *scheme, const char *path,
                                   "NAS 地址为空", "nas_bad_address", NULL);
   }
 
+  /* 只给了主机、没有共享名的 SMB 地址：libsmb2 会转去连 IPC$，而相当一批
+     NAS/Samba 对「IPC$ 上列根目录」的回应是直接断开 TCP —— 传出去的错误码是
+     CONNECTION_REFUSED (0xc0000236)，提示语却叫用户去查 SMB 服务和网络，
+     把人带进沟里（真机实测 2026-10-02：AppleNas/Samba TRIM 即此行为，
+     PC 侧 vendored libsmb2 复现一致）。共享名缺失应在入口就拦下。 */
+  if(scheme && !strcmp(scheme, "smb")) {
+    const char *pp = path, *sep;
+    while(*pp == '/' || *pp == '\\') pp++;
+    sep = pp + strcspn(pp, "/\\");
+    while(*sep == '/' || *sep == '\\') sep++;
+    if(!*sep) {
+      return send_json_error_detail(conn, MHD_HTTP_BAD_REQUEST,
+        "NAS 地址需包含共享名：写成 主机/共享名，"
+        "如 192.168.1.3/PS5_Games（可在 NAS 管理界面查看共享名）",
+        "nas_bad_address", NULL);
+    }
+  }
+
   nas_build_url(path, user, pass, port, url, sizeof(url));
   s = transfer_open(scheme, url);
   if(!s) {
@@ -103,6 +121,12 @@ nas_list(struct MHD_Connection *conn, const char *scheme, const char *path,
       snprintf(why, sizeof(why), "NAS 连接失败：%s"
                "（主机没有应答：请确认 NAS 的 SMB 服务已开启、"
                "地址和端口正确，且 PS5 与 NAS 在同一网络）", be);
+    else if(be && strstr(be, "BAD_NETWORK_NAME"))
+      /* 0xc00000cc：Samba 对「匿名/无权会话 + 受限共享」也回这个码
+         （故意不区分共享不存在与无权访问，防信息泄露），所以两条提示都要给。 */
+      snprintf(why, sizeof(why), "NAS 连接失败：%s"
+               "（共享名不存在，或该账号无权访问此共享 —— "
+               "核对共享名拼写；需要账号时在添加 NAS 里填用户名/密码）", be);
     else
       snprintf(why, sizeof(why), "NAS 连接失败：%s", be ? be : "未知原因");
     transfer_close(s);

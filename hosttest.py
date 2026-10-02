@@ -687,6 +687,21 @@ def main():
               j and not j.get("ok") and j.get("error_code") == "nas_bad_address",
               "st=%s j=%s" % (st, j))
 
+        # Share-less SMB address: rejected at the door with an actionable
+        # message. Without this guard libsmb2 connects to IPC$ instead and many
+        # NAS/Samba boxes answer the root listing by dropping the TCP
+        # connection, which surfaces as CONNECTION_REFUSED and sends the user
+        # off to check the network while the real problem is the address.
+        st, j = c.api_json("/api/fs/list", {"scheme": "smb", "path": "127.0.0.1"})
+        check("SMB address without share name -> nas_bad_address naming the share",
+              st == 400 and j and not j.get("ok")
+              and j.get("error_code") == "nas_bad_address"
+              and "共享名" in (j or {}).get("error", ""), "st=%s j=%s" % (st, j))
+        st, j = c.api_json("/api/fs/list", {"scheme": "smb", "path": "\\192.168.1.3\\"})
+        check("SMB share-less UNC form also rejected as nas_bad_address",
+              st == 400 and j and not j.get("ok")
+              and j.get("error_code") == "nas_bad_address", "st=%s j=%s" % (st, j))
+
         # Credentials / port are spliced into the URL, never rejected as bad input.
         st, j = c.api_json("/api/fs/list", {"scheme": "smb", "path": "127.0.0.1/share",
                                             "user": "guest", "pass": "x", "port": "1500"})
