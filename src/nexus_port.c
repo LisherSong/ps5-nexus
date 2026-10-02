@@ -305,7 +305,10 @@ api_app_register(struct MHD_Connection *conn, const char *body, size_t body_size
  * The transport is this project's own transfer layer (libsmb2 / libnfs), which
  * reuses the NAS credentials the bookmark already holds. */
 
-#define FETCH_CHUNK (256U * 1024U)
+/* 拉取分块不再写死：transfer_read_chunk() 回后端协商出的读上限（SMB2 ≥1MB）。
+   旧值 256KB 把复制速度钉死在「每往返 256KB」——千兆内网实测 ~7.5MB/s，正是
+   「25GB 传十分钟才 18%」的来源。缓存一份查询结果（同一连接协商不变）。 */
+#define FETCH_CHUNK_FALLBACK (256U * 1024U)
 
 static int
 write_all_fd(int fd, const void *buf, size_t len) {
@@ -359,11 +362,13 @@ nas_pull_file(file_task_t *task, transfer_src_t **slot, const char *url,
   transfer_src_t *src;
   uint64_t remote_size = 0;
   uint64_t offset = 0;
+  size_t chunk;
   struct stat st;
   int fd = -1;
   int outcome = -1;
 
-  if(!(buf = malloc(FETCH_CHUNK))) {
+  chunk = FETCH_CHUNK_FALLBACK;
+  if(!(buf = malloc(chunk))) {
     snprintf(why, why_size, "out of memory");
     return -1;
   }
@@ -377,6 +382,14 @@ nas_pull_file(file_task_t *task, transfer_src_t **slot, const char *url,
              ? transfer_last_error(src) : "读不到远端文件大小");
     free(buf);
     return -1;
+  }
+  /* 连接已建立（transfer_size 连上了）才能问协商结果；问不到就退回旧值。 */
+  {
+    size_t mx = transfer_read_chunk(src);
+    if(mx > chunk) {
+      unsigned char *nb = realloc(buf, mx);
+      if(nb) { buf = nb; chunk = mx; }
+    }
   }
   /* ⚠️ 这里**不能**把 size == 0 当失败：空文件（.nomedia、锁文件、空的存档槽）
      是合法的，上一版 fetch 把它判成「拉取中断」，等于整棵目录树里有一个空文件
@@ -402,8 +415,8 @@ nas_pull_file(file_task_t *task, transfer_src_t **slot, const char *url,
   }
 
   while(offset < remote_size) {
-    size_t want = (remote_size - offset) < FETCH_CHUNK
-                    ? (size_t)(remote_size - offset) : FETCH_CHUNK;
+    size_t want = (remote_size - offset) < chunk
+                    ? (size_t)(remote_size - offset) : chunk;
     size_t got = 0;
 
     if(task_cancel_requested(task)) { outcome = 1; goto out; }
@@ -1071,6 +1084,24 @@ save_scan_add_title(save_scan_stat_t *stats, int n, int titles) {
   stats[n - 1].titles += titles;
 }
 
+/* A save leaf holds more than games: sce_backupN (system backup slots),
+ * per-account "user"/meta trees, restore safety copies. Users read the scan
+ * list as "these are my games' saves", so anything that is not shaped like a
+ * title id (4 uppercase letters + 5 digits: PPSA…, CUSA…, SCUS…) is noise and
+ * is filtered out here — the exact rows the user circled in the save page
+ * screenshot ("sce_backup4 · 0 B · savedata", "user · 7.9 MB · meta"). */
+static int
+save_name_is_title(const char *name) {
+  size_t i, n = strlen(name);
+
+  if(n != 9) return 0;
+  for(i = 0; i < 4; i++)
+    if(name[i] < 'A' || name[i] > 'Z') return 0;
+  for(; i < 9; i++)
+    if(name[i] < '0' || name[i] > '9') return 0;
+  return 1;
+}
+
 /* Emit every title directory under "<base><leaf>". */
 static void
 scan_save_base(const char *base, strbuf_t *b, int *first,
@@ -1103,6 +1134,7 @@ scan_save_base(const char *base, strbuf_t *b, int *first,
       if(snprintf(title_dir, sizeof(title_dir), "%s/%s", leaf_dir, td->d_name) >=
          (int)sizeof(title_dir)) continue;
       if(lstat(title_dir, &st) || !S_ISDIR(st.st_mode)) continue;
+      if(!save_name_is_title(td->d_name)) continue;
       if(!*first) strbuf_append(b, ",");
       *first = 0;
       strbuf_append(b, "{\"title_id\":");
@@ -1362,6 +1394,169 @@ api_save_restore(struct MHD_Connection *conn, const char *body, size_t body_size
                                   "save data not found", "save_not_found", NULL);
   }
   t = queue_task(TASK_COPY, tid, snap, tid, save_restore_worker);
+  free(tid); free(snap);
+  if(!t) return send_json_error(conn, MHD_HTTP_CONFLICT, "another task is running");
+  return task_id_response(conn, t->id);
+}
+
+/* ====================================================================== */
+/* 存档删除：/api/save/delete（删本机存档）· /api/save/snapdelete（删快照）  */
+/* ====================================================================== */
+
+/* 删除是条目计数型任务（前端 isCountKind(7) 按「项」显示），所以和
+ * filemgr 的 TASK_DELETE worker 一样：先数一遍拿分母，再逐条删、逐条加进度。
+ * 独立实现而不是复用 remove_path()：那条路径挂在 filemgr 的通用 worker 上，
+ * 参数模型（多源、目标目录）对存档域是多余的表面积。 */
+
+static unsigned long long
+save_count_entries(const char *path) {
+  DIR *d = opendir(path);
+  struct dirent *e;
+  unsigned long long n = 0;
+
+  if(!d) return 0;
+  while((e = readdir(d))) {
+    char child[PATH_MAX];
+    struct stat st;
+
+    if(!strcmp(e->d_name, ".") || !strcmp(e->d_name, "..")) continue;
+    if(snprintf(child, sizeof(child), "%s/%s", path, e->d_name) >=
+       (int)sizeof(child)) continue;
+    if(lstat(child, &st)) continue;
+    n += S_ISDIR(st.st_mode) ? save_count_entries(child) + 1 : 1;
+  }
+  closedir(d);
+  return n;
+}
+
+/* 递归删除，每删掉一条（文件或目录）就 task_update 加 1 —— 与 save_count_entries
+ * 的口径严格对齐（它也算「目录本身 +1」）。返回 0 成功 / -1 失败 / 1 取消。 */
+static int
+save_rm_task_r(const char *path, file_task_t *task) {
+  DIR *d = opendir(path);
+  struct dirent *e;
+  int rc = 0;
+
+  if(d) {
+    while((e = readdir(d))) {
+      char child[PATH_MAX];
+      struct stat st;
+
+      if(!strcmp(e->d_name, ".") || !strcmp(e->d_name, "..")) continue;
+      if(task_cancel_requested(task)) { closedir(d); return 1; }
+      if(snprintf(child, sizeof(child), "%s/%s", path, e->d_name) >=
+         (int)sizeof(child)) continue;
+      if(lstat(child, &st)) continue;
+      if(S_ISDIR(st.st_mode))
+        rc = save_rm_task_r(child, task);
+      else
+        rc = (unlink(child) && errno != ENOENT) ? -1 : 0;
+      if(rc) { closedir(d); return rc; }
+      task_update(task, TASK_RUNNING, child, 1, NULL);
+    }
+    closedir(d);
+  }
+  if(rmdir(path) && errno != ENOENT) return -1;
+  task_update(task, TASK_RUNNING, path, 1, NULL);
+  return 0;
+}
+
+static void *
+save_delete_worker(void *arg) {
+  file_task_t *task = arg;
+  char target[PATH_MAX];
+  int rc;
+
+  task_update(task, TASK_RUNNING, task->current, 0, NULL);
+  snprintf(target, sizeof(target), "%s", task->src);
+  if(task->dst[0]) {
+    /* Deleting a LIVE save: the forced-snapshot rule applies here too — an
+     * irreversible delete without a snapshot is exactly the failure mode this
+     * domain must not have (same discipline as the restore worker). Snapshot
+     * deletion (dst empty) is already the user discarding a chosen backup. */
+    char snap_root[PATH_MAX], snap[PATH_MAX], stamp[32];
+    snprintf(stamp, sizeof(stamp), "%llu", (unsigned long long)time(NULL));
+    snprintf(snap_root, sizeof(snap_root), "%s/%s", save_snapshot_dir(), task->dst);
+    snprintf(snap, sizeof(snap), "%s/%s", snap_root, stamp);
+    mkdir_p(snap_root);
+    if(copy_tree(target, snap)) {
+      task_update(task, TASK_FAILED, target, 0,
+                  "could not snapshot before delete");
+      return NULL;
+    }
+  }
+  task_set_total(task, save_count_entries(target) + 1);
+  rc = save_rm_task_r(target, task);
+  if(rc == 1)      task_update(task, TASK_CANCELED, target, 0, "canceled");
+  else if(rc)      task_update(task, TASK_FAILED, target, 0, "delete failed");
+  else             task_update(task, TASK_DONE, target, 0, NULL);
+  return NULL;
+}
+
+/* Snapshot names are timestamps produced by save_backup_worker ("%llu").
+ * Restricting to digits keeps the resolved path inside the snapshot root no
+ * matter what the request body said (no "..", no separators, no absolute). */
+static int
+save_snapshot_name_ok(const char *name) {
+  size_t i;
+
+  if(!name || !*name) return 0;
+  for(i = 0; name[i]; i++)
+    if(name[i] < '0' || name[i] > '9') return 0;
+  return 1;
+}
+
+/* POST /api/save/delete {title_id} —— 删掉这个游戏的本机存档。
+ * ★ 强制快照铁律在这里同样生效：worker 先拍一份快照再删 —— 用户手滑删掉的
+ * 存档必须能从快照里救回来。「不可逆 ⇒ 宁可功能少不可丢档」是本域第一规则。 */
+enum MHD_Result
+api_save_delete(struct MHD_Connection *conn, const char *body, size_t body_size) {
+  char *tid = req_param(conn, body, body_size, "title_id");
+  char live[PATH_MAX];
+  file_task_t *t;
+
+  if(!tid || !*tid) {
+    free(tid);
+    return send_json_error(conn, MHD_HTTP_BAD_REQUEST, "invalid title id");
+  }
+  save_escalate();
+  if(!find_save_dir(tid, live, sizeof(live))) {
+    free(tid);
+    return send_json_error_detail(conn, MHD_HTTP_NOT_FOUND,
+                                  "save data not found", "save_not_found", NULL);
+  }
+  /* task->src = 存档绝对路径（worker 删它），task->dst = TITLE_ID（worker
+   * 用它落快照目录）。标签只放 TITLE_ID —— /api/tasks 会回显。 */
+  t = queue_task_ex(TASK_DELETE, live, tid, tid, NULL, 0, save_delete_worker);
+  free(tid);
+  if(!t) return send_json_error(conn, MHD_HTTP_CONFLICT, "another task is running");
+  return task_id_response(conn, t->id);
+}
+
+/* POST /api/save/snapdelete {title_id, snapshot} —— 删一份快照（不带存档）。
+ * 快照是用户显式选择丢弃的备份，不做二次快照，但名字必须是纯数字时间戳。 */
+enum MHD_Result
+api_save_snapdelete(struct MHD_Connection *conn, const char *body,
+                    size_t body_size) {
+  char *tid = req_param(conn, body, body_size, "title_id");
+  char *snap = req_param(conn, body, body_size, "snapshot");
+  char dir[PATH_MAX], target[PATH_MAX];
+  struct stat st;
+  file_task_t *t;
+
+  if(!tid || !*tid || !save_snapshot_name_ok(snap)) {
+    free(tid); free(snap);
+    return send_json_error(conn, MHD_HTTP_BAD_REQUEST, "invalid snapshot");
+  }
+  snprintf(dir, sizeof(dir), "%s/%s", save_snapshot_dir(), tid);
+  snprintf(target, sizeof(target), "%s/%s", dir, snap);
+  if(stat(target, &st) || !S_ISDIR(st.st_mode)) {
+    free(tid); free(snap);
+    return send_json_error_detail(conn, MHD_HTTP_NOT_FOUND,
+                                  "snapshot not found", "snapshot_not_found", NULL);
+  }
+  /* task->src = 快照绝对路径；dst 留空 = 不用再拍快照（删的本来就是快照）。 */
+  t = queue_task_ex(TASK_DELETE, target, "", tid, NULL, 0, save_delete_worker);
   free(tid); free(snap);
   if(!t) return send_json_error(conn, MHD_HTTP_CONFLICT, "another task is running");
   return task_id_response(conn, t->id);

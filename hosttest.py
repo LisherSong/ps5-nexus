@@ -471,6 +471,64 @@ def main():
         c.wait_idle()
         check("delete removed the whole tree", not os.path.exists(deltree))
 
+        # ---- 12c. 取消必须认**数字** id（任务坞按钮发的就是 {id: <number>}） ----
+        # 真因在 body_json_value：非字符串值（数字/布尔）以前被「跳到下一个逗号」，
+        # 从不返回 ⇒ id=NULL→0→"active task not found"。删除弹窗发字符串 id
+        # （"7"）所以能取消，任务坞发数字所以永远取消不了 —— 半边 UI 坏了却
+        # 一直没被发现。夹具：一个足够大的文件让复制跑一会儿，再点取消。
+        cc_src = os.path.join(ROOT, "cc-src")
+        cc_dst = os.path.join(ROOT, "cc-dst")
+        os.makedirs(cc_src, exist_ok=True)
+        with open(os.path.join(cc_src, "blob.bin"), "wb") as f:
+            f.write(b"x" * (150 * 1024 * 1024))
+        st, j = c.api_json("/api/copy", {"paths": cc_src, "dst": cc_dst,
+                                         "overwrite": "0"})
+        cc_id = (j or {}).get("task_id")
+        check("copy of a large file queues (cancel fixture)",
+              j and j.get("ok") and cc_id is not None, "j=%s" % j)
+        cc_canceled = False
+        cc_state = None
+        cc_row = None
+        if cc_id is not None:
+            # 任务窗口的「速度 / 已用时 / 剩余」三格全靠 /api/tasks 新吐出的三个字段
+            # （task.c 早就在采样 speed/eta，以前只差输出）。跑着的任务一定能看到。
+            for _ in range(30):
+                st4, tj = c.get_json("/api/tasks")
+                rows = (tj or {}).get("tasks", [])
+                cc_row = next((r for r in rows if r.get("id") == cc_id), None)
+                if cc_row and cc_row.get("state_name") == "running":
+                    break
+                time.sleep(0.1)
+            check("running task row exposes speed / eta / created_at",
+                  cc_row is not None and "speed" in cc_row and "eta" in cc_row
+                  and "created_at" in cc_row, "row=%s" % (cc_row,))
+            check("running task row's elapsed is derivable (created_at is epoch)",
+                  cc_row is not None and (cc_row.get("created_at") or 0) > 0,
+                  "created_at=%s" % ((cc_row or {}).get("created_at"),))
+            for _ in range(40):
+                # ★ 数字 id，不是字符串 —— 这正是被丢掉的那种值
+                st2, j2 = c.api_json("/api/task/cancel", {"id": cc_id})
+                if j2 and j2.get("ok"):
+                    cc_canceled = True
+                    break
+                st3, pj = c.api_post("/api/install/poll", {"id": str(cc_id)})
+                cc_state = (pj or {}).get("state_name")
+                if cc_state in ("done", "failed", "cancelled"):
+                    break
+                time.sleep(0.15)
+            # 取消受理后等 worker 真正停下，并在任务被摘走**之前**读到终态帧
+            for _ in range(60):
+                st3, pj = c.api_post("/api/install/poll", {"id": str(cc_id)})
+                if pj and pj.get("state_name") in ("done", "failed", "cancelled"):
+                    cc_state = pj.get("state_name")
+                    break
+                time.sleep(0.1)
+            c.wait_idle()
+        check("cancel with a NUMERIC id is accepted (dock sends {id: n})",
+              cc_canceled, "id=%s state=%s" % (cc_id, cc_state))
+        check("numerically cancelled task actually stops (state=cancelled)",
+              cc_state == "cancelled", "state=%s" % cc_state)
+
         # ---- 13. chmod (task) ----
         st, j = c.api_json("/api/chmod", {"paths": ROOT + "/up.bin",
                                           "mode": "0755", "recursive": "0"})
@@ -930,6 +988,65 @@ def main():
         check("save/scan diagnostics point at the fixture's leaf, not the home root",
               any((r.get("root") or "").endswith("savedata_prospero") and r.get("opened")
                   for r in roots), "roots=%s" % roots)
+
+        # ---- 15d-quater. 存档扫描的形状过滤：不是 TITLE_ID 的条目不算「游戏」 ----
+        # 用户截图圈掉的三行：sce_backupN（0 B · savedata）、user（·meta）——
+        # 存档叶里本来就住着系统备份槽/账号树，用户把列表读成「我的游戏」，
+        # 这些杂项就是噪音。server 端按「4 大写字母 + 5 数字」过滤。
+        # ★ 夹具先放杂项进去：过滤器被摘掉时 ids 断言会直接变红。
+        os.makedirs(os.path.join(save_root, "savedata", "sce_backup4"), exist_ok=True)
+        os.makedirs(os.path.join(save_root, "savedata_meta", "user"), exist_ok=True)
+        with open(os.path.join(save_root, "savedata", "sce_backup4", "x.bin"), "wb") as f:
+            f.write(b"")
+        st, j = c.get_json("/api/save/scan")
+        ids_f = sorted(set(s.get("title_id") for s in (j or {}).get("saves", [])))
+        check("save/scan filters non-title entries (sce_backupN / user are noise)",
+              st == 200 and ids_f == ["CUSA00001", "GAME00002"],
+              "ids=%s" % ids_f)
+
+        # ---- 15d-quinquies. 存档删除（快照删除 + 本机存档删除） ----
+        # 用户点名「这个存档页面没有增删改存档的功能只有个备份这不行」。
+        # 删除**本机存档**前服务端强制先拍一份快照（本域铁律：不可逆操作不得
+        # 没有快照）—— 夹具顺着这条链走一遍：删快照 → 删存档 → 从强制快照找回。
+        live_file = os.path.join(save_root, "savedata_prospero", title, "sd.bin")
+        st, j = c.api_post("/api/save/snapdelete",
+                           {"title_id": title, "snapshot": "../evil"})
+        check("snapdelete rejects non-digit snapshot names (no traversal)",
+              st == 400 and j and not j.get("ok"), "st=%s j=%s" % (st, j))
+        st, j = c.api_post("/api/save/snapdelete",
+                           {"title_id": title, "snapshot": "111"})
+        check("save/snapdelete queues a task", j and j.get("ok")
+              and (j.get("task_id") or 0) > 0, "j=%s" % j)
+        c.wait_idle()
+        st, j = c.api_post("/api/save/list", {"title_id": title})
+        check("deleted snapshot is gone from the list",
+              j and j.get("ok") and "111" not in (j.get("snapshots") or []),
+              "j=%s" % j)
+        check("live save is untouched by a snapshot delete",
+              os.path.exists(live_file), "live=%s" % os.path.exists(live_file))
+
+        st, j = c.api_post("/api/save/delete", {"title_id": title})
+        check("save/delete queues a task", j and j.get("ok")
+              and (j.get("task_id") or 0) > 0, "j=%s" % j)
+        c.wait_idle()
+        check("save/delete removed the live save", not os.path.exists(
+            os.path.join(save_root, "savedata_prospero", title)))
+        st, j = c.api_post("/api/save/list", {"title_id": title})
+        snaps3 = (j or {}).get("snapshots") or []
+        check("save/delete reports save_found=false afterwards",
+              j and j.get("ok") and j.get("save_found") is False, "j=%s" % j)
+        check("save/delete left a FORCED snapshot behind (P1 rule)",
+              len(snaps3) >= 1, "snapshots=%s" % snaps3)
+        rescued = False
+        for sname in snaps3:
+            try:
+                with open(os.path.join(snap_dir, title, sname, "sd.bin"), "rb") as f:
+                    if f.read() == b"OLD-V1":
+                        rescued = True
+                        break
+            except Exception:
+                pass
+        check("the forced snapshot holds the deleted save's bytes", rescued)
 
         # ---- 15e. pkg info via form POST (front-end style) must not be 405 ----
         st, j = c.api_post("/api/pkg/info", {"path": ROOT + "/pkgs/game.pkg"})

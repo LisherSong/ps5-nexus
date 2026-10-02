@@ -223,7 +223,7 @@ task_set_error_code(file_task_t *task, const char *code, const char *arg) {
   pthread_mutex_unlock(&g_tasks_lock);
 }
 
-static void
+void
 task_set_total(file_task_t *task, unsigned long long total) {
   pthread_mutex_lock(&g_tasks_lock);
   task->total = total;
@@ -2127,8 +2127,13 @@ api_tasks(struct MHD_Connection *conn, const char *body, size_t body_size) {
     json_escape(&b, task->current[0] ? task->current : task->src);
     strbuf_printf(&b, ",\"note\":");
     json_escape(&b, note);
-    strbuf_printf(&b, ",\"total\":%llu,\"progress\":%llu}",
-                  task->total, task->done);
+    /* speed/eta 由 task_update() 已经在采样（见 task.c），以前只差把它们吐出去：
+       「传输速度 / 已用时 / 剩余时间」正是任务窗口缺的那三格。speed 的单位与
+       任务口径一致（字节型任务 = 字节/秒，条目型 = 条目/秒），前端按 kind 挑单位。 */
+    strbuf_printf(&b, ",\"total\":%llu,\"progress\":%llu,\"speed\":%llu,"
+                      "\"eta\":%llu,\"created_at\":%lld}",
+                  task->total, task->done, task->speed, task->eta,
+                  (long long)task->created_at);
     if(!task_is_active(task)) task->reported = 1;
   }
   remove_finished_tasks_locked();
@@ -2893,6 +2898,8 @@ filemgr_api_request(struct MHD_Connection *conn, const char *url,
   if(!strcmp(url, "/api/save/list")) return api_save_list(conn, body, body_size);
   if(!strcmp(url, "/api/save/backup")) return api_save_backup(conn, body, body_size);
   if(!strcmp(url, "/api/save/restore")) return api_save_restore(conn, body, body_size);
+  if(!strcmp(url, "/api/save/delete")) return api_save_delete(conn, body, body_size);
+  if(!strcmp(url, "/api/save/snapdelete")) return api_save_snapdelete(conn, body, body_size);
   if(!strcmp(url, "/api/pkg/scan")) return api_pkg_scan(conn, body, body_size);
   if(!strcmp(url, "/api/pkg/enqueue")) return api_pkg_enqueue(conn, body, body_size);
   if(!strcmp(url, "/api/pkg/install-url")) {

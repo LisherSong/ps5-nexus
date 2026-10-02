@@ -222,14 +222,18 @@ pkg_install_begin(const char *pkg_path) {
   g_last_error = NULL;
 
   if(!pkg_path || !*pkg_path) { g_last_error = "no package path"; return NULL; }
-  if(!kstuff_ready()) {
-    /* Caller maps this to "kstuff not running"; say which evidence was missing
-     * so the UI can tell the user what to load. */
-    g_last_error = "kstuff is not running (no /proc/kstuff, no autoloader marker)";
-    return NULL;
-  }
+  /* Judgment is by whether the kernel call WORKS, not by marker files: loaders
+   * differ in what traces they leave (the user's kstuff was active yet neither
+   * /proc/kstuff nor the autoloader marker existed, and install was refused
+   * with "kstuff is not running" while it was running). A successful
+   * kernel_set_ucred_authid is the only evidence that matters — when it
+   * succeeds we proceed even with no markers; when it fails, the marker scan
+   * only decides how the error reads. */
   if(kernel_set_ucred_authid(NEXUS_INSTALL_AUTHID) != 0) {
-    g_last_error = "could not raise AuthID to 0x4800000000000006";
+    g_last_error = kstuff_ready()
+      ? "could not raise AuthID to 0x4800000000000006"
+      : "kstuff is not running (no /proc/kstuff, no autoloader marker; "
+        "kernel AuthID raise failed)";
     return NULL;
   }
 

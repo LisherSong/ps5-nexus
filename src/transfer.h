@@ -76,6 +76,20 @@ nexus_err_t transfer_list(transfer_src_t *s, const char *dir,
                           transfer_entry_t **out, int *count);
 nexus_err_t transfer_read(transfer_src_t *s, uint64_t offset,
                           void *buf, size_t len, size_t *got);
+/* Recommended per-call read size for this source, so callers can size their
+ * copy loop to the backend's negotiation instead of a safe-for-everyone guess.
+ *
+ * Why it matters: the SMB sync API is one request/one reply per call, so a
+ * copy's ceiling is roughly chunk/RTT. 256 KB per round trip reads as ~7 MB/s
+ * on a real gigabit link — the exact "25 GB 传了十分钟才 18%" report. The SMB2
+ * negotiation already carries a much larger max_read_size (≥1 MB against
+ * Samba/Windows); reading in that size quarters the round-trip count.
+ *
+ * Call it AFTER a first successful list/read/size on the source (the NAS
+ * backends connect lazily; before that there is no negotiation to ask).
+ * Never returns 0 or a value above 4 MB, so the caller's malloc stays bounded
+ * even if a server advertises something absurd. */
+size_t transfer_read_chunk(transfer_src_t *s);
 /* Total stream size, so the UI can draw a determinate progress bar instead of
  * an indeterminate one. Only meaningful for a file-like source. */
 nexus_err_t transfer_size(transfer_src_t *s, uint64_t *size);

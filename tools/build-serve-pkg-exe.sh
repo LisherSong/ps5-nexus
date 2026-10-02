@@ -53,6 +53,12 @@ ls -l "$out/serve-pkg.exe"
 
 if [ "${1:-}" != "--no-embed" ]; then
   cp "$out/serve-pkg.exe" "$root/assets/serve-pkg.exe"
+  # ⚠️ assets/ 下这份 .py 是 **ELF 内嵌、给 PS5 端当下载链接发出去**的那一份
+  # （Makefile 收的是 assets/*，不是 tools/*）。不同步就会出现「exe 是新的、
+  # 下载到的 py 还是旧版本」——用户拿到手的脚本里没有本轮的修复。
+  # 两份必须永远同源，所以在这里一起 copy。
+  cp "$root/tools/serve-pkg.py" "$root/assets/serve-pkg.py"
   echo "embedded: assets/serve-pkg.exe ($(stat -c%s "$root/assets/serve-pkg.exe") bytes)"
+  echo "embedded: assets/serve-pkg.py  ($(stat -c%s "$root/assets/serve-pkg.py") bytes)"
   echo "rebuild the payload:  make all   (or .build/rebuild-elf.sh)"
 fi

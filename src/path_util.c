@@ -280,9 +280,27 @@ body_json_value(const char *body, size_t body_size, const char *key) {
       }
       free(v);
     } else {
-      /* Non-string value (number / bool / null): skip to the next comma/brace. */
+      /* Non-string value (number / bool / null): the raw token IS the value —
+       * capture it verbatim. ⚠️ This used to just skip ahead, which made every
+       * numeric/bool field invisible: the task dock's cancel posts
+       * {id: <number>}, the server read id as NULL → 0 → "active task not
+       * found", and 取消 appeared to do nothing at all. String-valued callers
+       * (the delete dialog posts {id: "7"}) worked, which is exactly why this
+       * survived: half the UI could cancel, the other half could not. */
+      const char *tok = p;
       while(p < end && *p != ',' && *p != '}') {
         p++;
+      }
+      if(strlen(k) == key_len && !strncmp(k, key, key_len)) {
+        size_t tl = (size_t)(p - tok);
+        char *v;
+        while(tl && (tok[tl - 1] == ' ' || tok[tl - 1] == '\t')) tl--;
+        v = malloc(tl + 1);
+        if(!v) { free(k); return NULL; }
+        memcpy(v, tok, tl);
+        v[tl] = 0;
+        free(k);
+        return v;
       }
     }
     free(k);

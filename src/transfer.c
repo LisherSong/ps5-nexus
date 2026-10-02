@@ -633,6 +633,32 @@ transfer_size(transfer_src_t *s, uint64_t *size) {
   return NEXUS_ERR_UNSUPPORTED;
 }
 
+/* Recommended per-call read size; see transfer.h for why this exists.
+ * 1 MB is the floor because it is libsmb2's own default max_read_size when a
+ * server does not advertise one, and because a copy loop that read in smaller
+ * pieces than the link allows is exactly the slowdown users report. The 4 MB
+ * ceiling only bounds a caller's buffer against a server with an unreasonably
+ * large advertisement. */
+#define TRANSFER_CHUNK_FLOOR (1u * 1024u * 1024u)
+#define TRANSFER_CHUNK_CAP   (4u * 1024u * 1024u)
+
+size_t
+transfer_read_chunk(transfer_src_t *s) {
+  size_t chunk = TRANSFER_CHUNK_FLOOR;
+
+  if(!s) return TRANSFER_CHUNK_FLOOR;
+#if defined(NEXUS_HAVE_LIBSMB2)
+  if(s->scheme == SCHEME_SMB && s->smb2) {
+    uint32_t mx = smb2_get_max_read_size(s->smb2);
+    if(mx >= 4096 && (size_t)mx < chunk) chunk = (size_t)mx;
+  }
+#endif
+  /* NFS: libnfs exposes no negotiated read ceiling; the floor (1 MB) is also
+   * the NFSv3 protocol's own per-READ maximum, so it is the right value. */
+  if(chunk > TRANSFER_CHUNK_CAP) chunk = TRANSFER_CHUNK_CAP;
+  return chunk;
+}
+
 nexus_err_t
 transfer_read(transfer_src_t *s, uint64_t offset,
               void *buf, size_t len, size_t *got) {

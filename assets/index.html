@@ -842,7 +842,7 @@ button{font:inherit;color:inherit;background:none;border:0;cursor:pointer}
    视图时进度必须还在。⚠️ 它必须留在所有 .view 之外 —— .view.on 的
    animation:vin 会建立包含块，position:fixed 会被钉在视图内部（删除进度窗踩过
    同一个坑）。z-index 取 55：高于 .scrim(50)，否则一开模态框进度就被盖住。 */
-.dock{position:fixed;right:20px;bottom:20px;z-index:55;width:min(420px,92vw);
+.dock{position:fixed;right:20px;bottom:20px;z-index:55;width:min(500px,94vw);
   background:var(--page);border:1px solid var(--line-2);border-radius:var(--r-card);
   box-shadow:0 20px 54px rgba(0,0,0,.55);overflow:hidden}
 .dock[hidden]{display:none}
@@ -862,6 +862,10 @@ button{font:inherit;color:inherit;background:none;border:0;cursor:pointer}
   font-size:13px}
 .dock-sub{font-size:11.5px;line-height:1.45;overflow:hidden;text-overflow:ellipsis;
   white-space:nowrap;font-family:var(--mono)}
+/* 速度 / 已用时 / 剩余：mono + tabular-nums，跳动时数字不左右晃 */
+.dock-meta{display:flex;gap:12px;font:11.5px var(--mono);color:var(--fg3);
+  font-variant-numeric:tabular-nums;white-space:nowrap;overflow:hidden}
+.dock-meta b{color:var(--fg2);font-weight:500}
 .dock .track.sm{height:6px;margin:0}
 @media (max-width:560px){
   .dock{left:10px;right:10px;bottom:10px;width:auto}
@@ -1367,7 +1371,6 @@ button{font:inherit;color:inherit;background:none;border:0;cursor:pointer}
         </div>
       </div>
       <div class="note" id="ppStatus" style="color:var(--fg3);margin:4px 0 12px">输入 PC 地址后点「连接」。</div>
-      <div class="covers" id="ppGrid" style="margin-top:6px"></div>
       <div class="fld" style="margin-top:14px;border-top:1px solid var(--line);padding-top:12px">
         <label for="ppPick">不用 serve-pkg.py　·　从这台电脑直接选 PKG 文件，先上传到 PS5 暂存目录，装完自动清理</label>
         <div style="display:flex;gap:10px;align-items:center">
@@ -1424,20 +1427,23 @@ button{font:inherit;color:inherit;background:none;border:0;cursor:pointer}
      ⚠️ 放在全部 .view 之外：.view.on 带 `animation:vin`，动画期间祖先有 transform，
      会让 position:fixed 的子元素改以 .view 为包含块（对话框会被裁在视图里）。 -->
 <div class="scrim" id="scrimDel" role="dialog" aria-modal="true" aria-labelledby="delTitle">
-  <div class="dlg" style="max-width:440px">
+  <div class="dlg" style="max-width:560px">
     <div class="dlg-h"><h2 id="delTitle">正在删除</h2><span class="sp"></span></div>
     <div class="dlg-b">
       <!-- ⚠️ 这里**不能加 data-p**：静态演示下有个 900ms 的假数据推进器会遍历
            `[data-p] i` 并按演示时间轴改写宽度。这条是真实数据，加了会让离线预览
-           显示假进度。data-p 是「假数据占位」标记，真实进度不该共用它。 -->
+           显示假进度。data-p 是「假数据占位」标记，真实进度不该共用它。
+           扫光由 JS 在任务 running 时给 .track 挂 .pulse（同一套 shimmer CSS）。 -->
       <div class="track" style="margin:14px 0 10px"><i id="jobBarFill" style="width:0%"></i></div>
-      <div class="stats" style="grid-template-columns:repeat(2,1fr)">
+      <div class="stats" style="grid-template-columns:repeat(3,1fr)">
         <div><b id="jobBarPct">0%</b><span>进度</span></div>
         <div><b id="jobBarCount">—</b><span>已删条目</span></div>
+        <div><b id="jobBarSpeed">—</b><span>速度</span></div>
       </div>
       <!-- 正在删的那一条（用户反馈「不显示删除文件」）。长路径从尾部截断，
            整个路径放在 title 里，鼠标停一下/长按能看到全貌。 -->
       <div class="delcur" id="jobBarCur" title="">—</div>
+      <div class="delcur" id="jobBarTime" title="">—</div>
       <div class="space"><span id="jobBarText">正在删除</span>
         <button class="btn sm" id="jobBarCancel" title="停止删除（已删掉的部分不会恢复）">取消</button></div>
     </div>
@@ -1564,8 +1570,10 @@ async function renderSaveSnaps(tid) {
   }
   svSnaps.innerHTML = '<div class="snaps">' + snaps.map(s =>
     '<div class="snap"><span class="tm"></span><span class="why">' + esc(s) + '</span>' +
-    '<button class="btn sm" data-snap="' + esc(s) + '">回滚</button></div>').join("") + '</div>';
+    '<button class="btn sm" data-snap="' + esc(s) + '">回滚</button>' +
+    '<button class="btn sm" data-snapdel="' + esc(s) + '">删除</button></div>').join("") + '</div>';
   svSnaps.querySelectorAll("button[data-snap]").forEach(b => b.addEventListener("click", () => saveRestore(b.dataset.snap)));
+  svSnaps.querySelectorAll("button[data-snapdel]").forEach(b => b.addEventListener("click", () => saveSnapDelete(b.dataset.snapdel)));
 }
 /* 扫描本机存档：/api/save/scan 枚举 /user/home/<账号>/savedata_prospero/<TID>。
    账号目录名无法从 title id 推导，只能枚举 —— 这正是手动敲 TITLE_ID 查不到的原因。 */
@@ -1580,8 +1588,13 @@ async function renderSaveSaves() {
     if (cnt) cnt.textContent = "—";
     return;
   }
-  const saves = j.saves || [];
-  if (cnt) cnt.textContent = saves.length + "";
+  const saves = (j.saves || []).filter(s =>
+    /^[A-Z]{4}\d{5}$/.test(String(s.title_id || "")));
+  /* 前端也按 TITLE_ID 形状再筛一道：服务端已经过滤（save_name_is_title），
+     但这一页的契约是「列出来的就是游戏」—— 万一后端是旧版本，页面上也
+     不能再出现用户圈掉的 sce_backupN / user 那种行。 */
+  const dropped = (j.saves || []).length - saves.length;
+  if (cnt) cnt.textContent = saves.length + (dropped ? "（已略去 " + dropped + " 条非存档条目）" : "");
   if (!saves.length) {
     /* ⭐ 空列表有三种完全不同的成因，用户该做的事也完全不同：
          (a) 提权失败 ⇒ /user/home 根本打不开（要 kstuff 的内核权限）；
@@ -1619,13 +1632,39 @@ async function renderSaveSaves() {
     ' · ' + esc((s.kind || "").replace("savedata_prospero_meta", "meta")) + '</span>' +
     '<span class="acts2">' +
     '<button class="btn sm" data-fill="' + esc(s.title_id) + '">填 TITLE_ID</button>' +
-    '<button class="btn sm pri" data-bak="' + esc(s.title_id) + '">备份</button></span></div>').join("") + '</div>';
+    '<button class="btn sm pri" data-bak="' + esc(s.title_id) + '">备份</button>' +
+    '<button class="btn sm" data-svdel="' + esc(s.title_id) + '">删除存档</button></span></div>').join("") + '</div>';
   box.querySelectorAll("button[data-fill]").forEach(b => b.addEventListener("click", () => {
     svTitle.value = b.dataset.fill; renderSaveSnaps(b.dataset.fill);
   }));
   box.querySelectorAll("button[data-bak]").forEach(b => b.addEventListener("click", () => {
     svTitle.value = b.dataset.bak; saveBackup();
   }));
+  box.querySelectorAll("button[data-svdel]").forEach(b => b.addEventListener("click", () => {
+    svTitle.value = b.dataset.svdel; saveDelete();
+  }));
+}
+async function saveDelete() {
+  const tid = (svTitle.value || "").trim();
+  if (!tid) { toast("先输入 TITLE_ID"); return; }
+  if (!LIVE) { toast("真机下可删除存档"); return; }
+  /* 删除前服务端会强制先拍一份快照（本域铁律：不可逆操作不得没有快照），
+     所以这里如实告诉用户「能救回来」—— 但快照被再删一次就真没了。 */
+  if (!confirm("确定删除 " + tid + " 的本机存档？\n删除前会自动先拍一份快照（可从快照回滚救回）。")) return;
+  const j = await apiPost("/api/save/delete", { title_id: tid });
+  if (!j || !j.ok) { toast("删除失败：" + (j && j.error ? j.error : "服务不可用")); return; }
+  toast("删除已入队（先快照后删除）：" + tid);
+  trackSaveTask(Number(j.task_id) || 0, tid, "已删除存档：" + tid, () => { renderSaveSaves(); renderSaveSnaps(tid); });
+}
+async function saveSnapDelete(snapshot) {
+  const tid = (svTitle.value || "").trim();
+  if (!tid) { toast("先输入 TITLE_ID"); return; }
+  if (!LIVE) { toast("真机下可删除快照"); return; }
+  if (!confirm("确定删除快照 " + snapshot + "（" + tid + "）？\n⚠️ 快照删除后不可恢复，也不会再有任何副本。")) return;
+  const j = await apiPost("/api/save/snapdelete", { title_id: tid, snapshot });
+  if (!j || !j.ok) { toast("删除失败：" + (j && j.error ? j.error : "服务不可用")); return; }
+  toast("删除快照已入队：" + tid + " / " + snapshot);
+  trackSaveTask(Number(j.task_id) || 0, tid, "已删除快照：" + tid + " / " + snapshot, () => renderSaveSnaps(tid));
 }
 async function saveBackup() {
   const tid = (svTitle.value || "").trim();
@@ -2437,9 +2476,23 @@ function renderJob(tasks) {
       : counting ? "正在统计条目…"
       : "正在删除";
     document.getElementById("jobBarFill").style.width = pct + "%";
+    document.getElementById("jobBarFill").parentElement.classList.add("pulse");
     document.getElementById("jobBarCount").textContent =
       counting ? "统计中…" : fmtCount(run.progress) + " / " + fmtCount(run.total) + " 项";
     document.getElementById("jobBarPct").textContent = pct + "%";
+    /* 速度 / 已用时 / 剩余（用户点名要的三格；queued 时还没有样本，给 —） */
+    {
+      const sp = document.getElementById("jobBarSpeed");
+      const tm = document.getElementById("jobBarTime");
+      if (sp) sp.textContent = fmtSpeed(run);
+      if (tm) {
+        const bits = [];
+        if (run.created_at) bits.push("已用 " + fmtDur(taskElapsedMs(run)));
+        const eta = Number(run.eta) || 0;
+        if (eta > 0 && !counting) bits.push("剩约 " + fmtDur(eta * 1000));
+        tm.textContent = bits.length ? bits.join(" · ") : "—";
+      }
+    }
     /* 正在删的那一条。服务端 note 在没有 error 时就是 task->current（绝对路径）。
        计数阶段显示的是正在被统计的条目，同样是有用的信息。 */
     const cur = document.getElementById("jobBarCur");
@@ -2452,6 +2505,10 @@ function renderJob(tasks) {
     return;
   }
   if (bar.classList.contains("on")) bar.classList.remove("on");
+  {
+    const tr = document.getElementById("jobBarFill");
+    if (tr) tr.parentElement.classList.remove("pulse");
+  }
   if (!delArmed) return;
   delArmed = false;
   /* 取最后一条删除任务的结果来说话。取不到就什么都不说 —— 宁可沉默，也不编结果。 */
@@ -2892,27 +2949,41 @@ const coverOf = tid => { let h = 0; for (const c of String(tid || "x")) h += c.c
 /* 真封面：后端 /api/pkg/icon 直接从 PKG 容器里抽 icon0.png（未加密条目），
    404 = 容器里没有/不是本地文件 ⇒ onerror 自删，露出下面的渐变 ID 兜底。
    只有真实 .pkg 文件路径才值得试；目录型条目没有容器，直接不给 img。 */
-const coverImg = p => (p && p.path && /\.pkg$/i.test(p.path)
-  ? '<img class="cimg" alt="" loading="lazy" src="/api/pkg/icon?path=' + encodeURIComponent(p.path) + '" onerror="this.remove()">'
-  : "");
+const coverImg = p => {
+  if (p && p.icon_url) {
+    /* PC 来源的包：封面由 PC 端 serve-pkg 自己从 PKG 里抽出来当图片发过来
+       （服务端已做过 URL 编码，这里不能再 encode 一次）。 */
+    return '<img class="cimg" alt="" loading="lazy" src="' + esc(p.icon_url)
+      + '" onerror="this.remove()">';
+  }
+  return (p && p.path && /\.pkg$/i.test(p.path))
+    ? '<img class="cimg" alt="" loading="lazy" src="/api/pkg/icon?path='
+      + encodeURIComponent(p.path) + '" onerror="this.remove()">'
+    : "";
+};
 
 function libCard(p) {
   const tid = p.title_id || "";
   const ver = String(p.version || "").replace(/^v/i, "");
   /* fPKG 镜像没有容器元数据（无 title_id/版本可读），标签与封面位改用它自己的口径，
-     但「安装」按钮完全一致 —— 点了后台复制进 /data/homebrew，不需要额外按钮。 */
+     但「安装」按钮完全一致 —— 点了后台复制进 /data/homebrew，不需要额外按钮。
+     PC 直装条目（serve-pkg /catalog）同样常驻这块网格：封面抽不到（容器不在本机），
+     用渐变 + 文件名里能解析出的 TITLE_ID 兜底。 */
   const fpkg = !!p.is_fpkg;
-  const plat = fpkg ? "fPKG" : tidPlat(tid);
-  const mark = fpkg ? "IMG" : tidMark(tid);
-  const meta1 = fpkg ? "fPKG 镜像" : (tid + (ver ? " · v" + ver : ""));
-  const pill = fpkg ? "fPKG 镜像" : "待安装";
+  const pc = !!p.pc;
+  const plat = fpkg ? "fPKG" : pc ? "PKG" : tidPlat(tid);
+  const mark = fpkg ? "IMG" : (tid ? tidMark(tid) : (pc ? "PC" : ""));
+  const meta1 = fpkg ? "fPKG 镜像" : pc ? "PC 直装" + (tid ? " · " + tid : "")
+              : (tid + (ver ? " · v" + ver : ""));
+  const pill = fpkg ? "fPKG 镜像" : pc ? "来自 PC" : "待安装";
   return '<article class="gcard" tabindex="0" data-tid="' + esc(tid) + '" data-title="' + esc(p.title || "")
     + '" data-version="' + esc(ver) + '" data-size="' + esc(String(p.size || 0))
-    + '" data-fpkg="' + (fpkg ? "1" : "") + '" data-path="' + esc(p.path || "") + '">'
-    + '<div class="cover ' + coverOf(tid) + '"><span class="plat">' + esc(plat) + '</span><span class="mark">' + esc(mark) + "</span>" + coverImg(p) + "</div>"
+    + '" data-fpkg="' + (fpkg ? "1" : "") + '" data-path="' + esc(p.path || "")
+    + '" data-pc="' + (pc ? "1" : "") + '" data-url="' + esc(p.url || "") + '">'
+    + '<div class="cover ' + coverOf(tid || p.title) + '"><span class="plat">' + esc(plat) + '</span><span class="mark">' + esc(mark) + "</span>" + coverImg(p) + "</div>"
     + '<div class="gbody"><div class="gtitleline"><b class="gtitle">' + esc(p.title || tid || "未知标题") + '</b><span class="pill n">' + esc(pill) + "</span></div>"
     + '<div class="gmeta"><span>' + esc(meta1) + "</span>"
-    + "<span>" + (p.size ? fmt(p.size) : "大小未知") + " · 待安装</span></div>"
+    + "<span>" + (p.size ? fmt(p.size) : "大小未知") + " · " + (pc ? "系统安装器直接从 PC 下载" : "待安装") + "</span></div>"
     + '<div class="gacts"><button class="btn sm pri">安装</button></div>'
     + "</div></article>";
 }
@@ -2922,6 +2993,29 @@ function libCard(p) {
    不存在的目录 scan_dir() 的 opendir 会失败并返回空集，不报错，所以可以无脑全试。
    用 /data 下的具体子目录而不是整个 /data：/data 是 PFS，递归全扫代价大且几乎不会有 PKG。 */
 const LIB_SCAN_ROOTS = ["/mnt/ext1/games", "/mnt/usb0", "/mnt/usb1", "/data/pkg"];
+
+/* 从 PC 连接扫到的包（serve-pkg /catalog）—— 用户点名：它们应该显示在
+ * PKG 管理页面里，而不是锁在「从 PC 安装」的小弹窗中。ppConnect 成功后把
+ * catalog 放进 pcCatalog，这里合并渲染；重连/断开以最新一次连接为准。 */
+let pcCatalog = [];
+function pcAsLibItem(it) {
+  const name = it.name || it.id || "";
+  const m = String(name).match(/(?:PPSA|CUSA)\d{5}/i);
+  const base = "http://" + (typeof ppConnected !== "undefined" ? ppConnected : "");
+  return {
+    title_id: m ? m[0].toUpperCase() : "",
+    title: name,
+    version: "",
+    size: it.size || 0,
+    is_fpkg: !!it.is_fpkg,
+    path: "",
+    /* 封面：PC 端从 PKG 里抽好的 icon0.png 地址（服务端给的是已编码的相对路径）。
+       抽不到就没有这个字段 ⇒ libCard 走字母兜底。 */
+    icon_url: it.icon ? base + it.icon : "",
+    url: base + (it.url || ("/pkg/" + encodeURIComponent(it.id || ""))),
+    pc: true,
+  };
+}
 
 async function renderLibrary() {
   if (!LIVE) return;                       // 静态模式保留原型卡
@@ -2937,20 +3031,24 @@ async function renderLibrary() {
       if (p && p.path && !seen.has(p.path)) { seen.add(p.path); pkgs.push(p); }
     }
   }
-  if (!pkgs.length && firstErr) {
+  if (!pkgs.length && firstErr && !pcCatalog.length) {
     box.innerHTML = '<div class="note" style="grid-column:1/-1;color:var(--fg3)">扫描失败：'
       + esc(firstErr) + "</div>";
     if (count) count.textContent = "—";
     return;
   }
-  if (!pkgs.length) {
+  if (!pkgs.length && !pcCatalog.length) {
     box.innerHTML = '<div class="note" style="grid-column:1/-1;color:var(--fg3)">'
       + "没有扫描到 PKG / fPKG 镜像（已查 M.2 games、USB /mnt/usb0|1、/data/pkg）</div>";
     if (count) count.textContent = "0 个";
     return;
   }
-  box.innerHTML = pkgs.map(libCard).join("");
-  if (count) count.textContent = pkgs.length + " 个 · 全部待安装";
+  /* PC 直装条目排在本地之后（本地盘读取更快、也更要紧），但同样是一等公民卡片。
+     ⚠️ pcCatalog 里已经是**转换过**的条目（ppConnect 里过的 pcAsLibItem），
+     这里再 map 一次会把 URL 前缀套两遍（"http://hosthttp://host/pkg/x.pkg"）。 */
+  box.innerHTML = pkgs.map(libCard).join("") + pcCatalog.map(libCard).join("");
+  if (count) count.textContent = (pkgs.length + pcCatalog.length) + " 个 · 全部待安装"
+    + (pcCatalog.length ? "（含 " + pcCatalog.length + " 个来自 PC）" : "");
 }
 
 /* ---- 任务坞：跑得久的操作（解压 / PKG 安装 / 拉取 / 复制）共用的进度面板 ----
@@ -3018,6 +3116,33 @@ function dockWord(t) {
   if (t.state_name === "queued") return "排队中";
   return Number(t.total) > 0 ? dockPct(t) + "%" : "进行中";
 }
+/* ---- 速度 / 已用时 / 剩余（用户点名任务窗口要显示的三格） ----
+   speed/eta/created_at 由服务端在 /api/tasks 里吐出（task_update 本来就在采样，
+   以前只差输出）。speed 的单位与任务口径一致：字节型 = 字节/秒，条目型（删除、
+   存档删除）= 条目/秒，安装 = 百分点/秒。已用时用 created_at（epoch 秒）换算；
+   时长沿用上传弹窗的 fmtDur(ms)（mm:ss），一个页面一种时长写法。 */
+const taskElapsedMs = t => (Date.now() / 1000 - Number(t.created_at || 0)) * 1000;
+function fmtSpeed(t) {
+  const v = Number(t.speed) || 0;
+  if (v <= 0) return "—";
+  /* 单位跟着任务口径走，且沿用上传弹窗已有的 fmtRate（"12 MB/s"）：
+     条目型是「项/秒」，安装是「百分點/秒」，其余是字节速率。 */
+  if (t.kind === 7) return fmtCount(v) + " 项/秒";
+  if (t.kind === 3) return v + "%/秒";
+  return fmtRate(v);
+}
+function dockMeta(t) {
+  if (t.state_name !== "running" && t.state_name !== "queued") return "";
+  const parts = [];
+  const sp = fmtSpeed(t);
+  if (sp !== "—") parts.push(sp);
+  if (t.created_at) parts.push("已用 " + fmtDur(taskElapsedMs(t)));
+  const eta = Number(t.eta) || 0;
+  if (eta > 0 && Number(t.total) > 0 && Number(t.progress) < Number(t.total))
+    parts.push("剩约 " + fmtDur(eta * 1000));
+  return parts.length ? '<div class="dock-meta"><b>' + parts.join("</b><span>·</span><b>")
+    + "</b></div>" : "";
+}
 function dockRow(t) {
   const kind = KIND_CN[t.kind] || ["任务", "i-tasks"];
   const st = STATE_CN[t.state_name] || [t.state_name, "n"];
@@ -3035,7 +3160,8 @@ function dockRow(t) {
     + '<span class="m">' + dockWord(t) + "</span>"
     + (active ? '<button class="btn sm" data-cancel="' + t.id + '">取消</button>' : "")
     + "</div>"
-    + '<div class="track sm"><i style="width:' + dockPct(t) + '%"></i></div>'
+    + '<div class="track sm' + (active ? " pulse" : "") + '"><i style="width:' + dockPct(t) + '%"></i></div>'
+    + dockMeta(t)
     + (sub ? '<div class="dock-sub" style="color:' + tone + '">' + esc(sub) + "</div>" : "")
     + "</div>";
 }
@@ -3109,8 +3235,12 @@ if (taskDock) {
     const b = e.target.closest("[data-cancel]");
     if (!b) return;
     b.disabled = true;
+    b.textContent = "取消中…";
     const j = await apiPost("/api/task/cancel", { id: Number(b.dataset.cancel) });
-    if (!j || !j.ok) { b.disabled = false; toast("取消失败：任务可能已经结束"); }
+    if (!j || !j.ok) { b.disabled = false; b.textContent = "取消"; toast("取消失败：任务可能已经结束"); return; }
+    /* 服务端已受理：立即拉一次快照让按钮/文案换面，别让用户对着旧状态猜 2.5s。
+       真正的终态帧仍由全局轮询器派发（watchTask），这里只是即时反馈。 */
+    if (typeof refreshAll === "function") refreshAll();
   });
 }
 /* 文件视图点 .pkg / fPKG 镜像 → 跳游戏库 + 进度弹窗（服务端按扩展名分流） */
@@ -3258,6 +3388,21 @@ if (libCovers) libCovers.addEventListener("click", async e => {
     if (!card) return;
     const fpkg = card.dataset.fpkg === "1";
     btn.disabled = true;
+    /* PC 直装卡片（data-url 非空）：系统安装器直接从 PC 下载，走 install-url；
+       本地卡片才走 /api/pkg/enqueue。两条路别混 —— enqueue 需要本机路径。 */
+    if (card.dataset.url) {
+      const j = await apiPost("/api/pkg/install-url", { url: card.dataset.url });
+      if (j && j.ok) {
+        btn.textContent = "已入队";
+        pollInstall(Number(j.task_id) || 0,
+          card.dataset.title || card.dataset.tid || "PKG", fpkg);
+        refreshAll();
+      } else {
+        btn.disabled = false;
+        toast("入队失败：" + (j && j.error ? j.error : "服务不可用"));
+      }
+      return;
+    }
     const j = await apiPost("/api/pkg/enqueue", {
       path: card.dataset.path, title: card.dataset.title, version: card.dataset.version,
     });
@@ -3277,6 +3422,11 @@ if (libCovers) libCovers.addEventListener("click", async e => {
   /* click on card body (not the action button) opens the info panel */
   const card = e.target.closest(".gcard");
   if (card && LIVE) {
+    if (card.dataset.pc === "1") {
+      /* PC 卡片没有本地路径可解析元数据；详情就是卡片上那几行，不弹空面板。 */
+      toast(card.dataset.title + "：来自 PC 直装，系统安装器下载时不占 PS5 硬盘");
+      return;
+    }
     if (card.dataset.fpkg === "1") openFpkgInfo(card);
     else openPkgInfo(card.dataset.path, card.dataset.title || card.dataset.tid);
   }
@@ -3289,27 +3439,10 @@ if (libCovers) libCovers.addEventListener("click", async e => {
 const scrimPkgPc = document.getElementById("scrimPkgPc");
 const ppAddr = document.getElementById("ppAddr");
 const ppStatus = document.getElementById("ppStatus");
-const ppGrid = document.getElementById("ppGrid");
 const PP_ADDR_KEY = "nexus.pcAddr";
 let ppConnected = "";                      /* 已连通的 "ip:port" */
 
 function closePkgPc() { if (scrimPkgPc) scrimPkgPc.classList.remove("on"); }
-
-function pcCard(it) {
-  const fpkg = !!it.is_fpkg;
-  const label = it.name || it.id || "未命名";
-  const url = "http://" + ppConnected + (it.url || ("/pkg/" + encodeURIComponent(it.id || "")));
-  return '<article class="gcard" tabindex="0" data-name="' + esc(label)
-    + '" data-size="' + esc(String(it.size || 0)) + '" data-fpkg="' + (fpkg ? "1" : "")
-    + '" data-url="' + esc(url) + '">'
-    + '<div class="cover ' + coverOf(label) + '"><span class="plat">' + (fpkg ? "fPKG" : "PKG")
-    + '</span><span class="mark">' + (fpkg ? "IMG" : "PC") + "</span></div>"
-    + '<div class="gbody"><div class="gtitleline"><b class="gtitle">' + esc(label) + '</b><span class="pill n">待安装</span></div>'
-    + '<div class="gmeta"><span>' + (fpkg ? "fPKG 镜像" : "PKG 安装包") + "</span>"
-    + "<span>" + (it.size ? fmt(it.size) : "大小未知") + " · PC 直装</span></div>"
-    + '<div class="gacts"><button class="btn sm pri">安装</button></div>'
-    + "</div></article>";
-}
 
 function pcInfoRows(card) {
   const row = (k, v) => '<div class="pkginfo-row"><span class="k">' + esc(k)
@@ -3328,34 +3461,26 @@ async function ppConnect() {
   if (!addr) { ppStatus.textContent = "先填 PC 地址，例如 192.168.1.10:9898"; return; }
   ppConnected = "";
   ppStatus.textContent = "连接 " + addr + " …";
-  ppGrid.innerHTML = "";
   let j = null;
   try {
     const r = await fetch("http://" + addr + "/catalog", { cache: "no-store" });
     j = await r.json();
   } catch (err) { j = null; }
   if (!j || !j.ok || !Array.isArray(j.items)) {
-    ppStatus.textContent = "连接失败：确认 PC 上已运行 python serve-pkg.py（端口一致、防火墙放行、PC 与 PS5 同一网段）";
+    ppStatus.textContent = "连接失败：确认 PC 上已运行 serve-pkg（端口一致、防火墙放行、PC 与 PS5 同一网段）";
     return;
   }
   ppConnected = addr;
   try { localStorage.setItem(PP_ADDR_KEY, addr); } catch (e) { /* 隐私模式忽略 */ }
-  ppStatus.textContent = "已连接 " + addr + "，共 " + j.items.length + " 个安装包";
-  ppGrid.innerHTML = j.items.map(pcCard).join("");
-}
-
-async function ppInstall(btn) {
-  const card = btn.closest(".gcard");
-  if (!card || !LIVE || btn.disabled) return;
-  btn.disabled = true;
-  const j = await apiPost("/api/pkg/install-url", { url: card.dataset.url });
-  if (j && j.ok) {
+  /* 用户点名：扫到的包**不该锁在这个小弹窗里**，要显示在 PKG 管理页面中。
+     这里只记录连接结果并刷新主网格；弹窗里不再摆卡片网格。 */
+  pcCatalog = j.items.map(pcAsLibItem);
+  ppStatus.textContent = "已连接 " + addr + "，共 " + j.items.length + " 个安装包 —— 已列入下方「PKG 管理」";
+  if (typeof renderLibrary === "function") renderLibrary();
+  if (j.items.length) {
     closePkgPc();
-    pollInstall(Number(j.task_id) || 0, card.dataset.name, card.dataset.fpkg === "1");
-    refreshAll();
-  } else {
-    btn.disabled = false;
-    toast("入队失败：" + (j && j.error ? j.error : "服务不可用"));
+    goto("library");
+    toast("已连接 " + addr + "：" + j.items.length + " 个安装包已列入 PKG 管理");
   }
 }
 
@@ -3481,27 +3606,6 @@ if (ppStaging) ppStaging.addEventListener("click", async () => {
 });
 document.addEventListener("keydown", e => {
   if (e.key === "Escape" && scrimPkgPc.classList.contains("on")) closePkgPc();
-});
-if (ppGrid) ppGrid.addEventListener("click", e => {
-  const btn = e.target.closest(".gacts .btn");
-  if (btn) { ppInstall(btn); return; }
-  const card = e.target.closest(".gcard");
-  if (card && ppConnected) {
-    /* 卡片信息复用 PKG 详情弹窗（远程包读不到 SFO，显示来源与方式） */
-    closePkgPc();
-    pkgInfoCurrent = null;
-    pkgInfoTab = "spec";
-    if (pkgInfoTabs) pkgInfoTabs.querySelectorAll("button").forEach(
-      x => x.setAttribute("aria-pressed", String(x.dataset.tab === "spec")));
-    pkgInfoTitle.textContent = card.dataset.name;
-    pkgInfoSub.innerHTML = (card.dataset.fpkg === "1" ? "fPKG 镜像" : "PKG 安装包")
-      + ' · <span class="num">' + esc(fmt(Number(card.dataset.size) || 0)) + "</span>";
-    pkgInfoCover.hidden = true;
-    pkgInfoFallback.hidden = false;
-    pkgInfoFallback.textContent = "PC";
-    pkgInfoPane.innerHTML = pcInfoRows(card);
-    scrimPkgInfo.classList.add("on");
-  }
 });
 
 /* ---- 从 NAS 拉取：最小对话框 → /api/fetch ---- */
