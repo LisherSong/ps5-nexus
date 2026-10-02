@@ -201,8 +201,15 @@ button{font:inherit;color:inherit;background:none;border:0;cursor:pointer}
 .ipchip[data-copied]{background:var(--ok-soft);border-color:var(--ghost-line);color:var(--ok)}
 .ipchip[data-copied] .i{color:var(--ok)}
 /* 按钮走全圆角胶囊（2026-10-02 参考 DSH 按钮样式：icon+文字、细边、stadium 形） */
+/* 🪤 `<a class="btn">` 也必须长得像按钮 —— PC 端弹出的两个下载链接就是 `<a>`：
+   UA 样式表给 `a:-webkit-any-link` 上了「链接蓝 + 下划线」，而**作者规则永远压过 UA 规则**
+   （与选择器特异性无关，只要声明同一个属性）⇒ 这里显式写 `color:inherit`+`text-decoration:none`
+   即可覆盖。⚠️ 改前这条规则只有布局属性，于是暗色主题里挂着两条蓝字下划线、跟旁边的真按钮
+   明显不是一家人；截图上看得见，任何断言都测不出来（颜色/装饰不在既有断言口径里）。
+   `cursor:pointer` 是给 `a` 兜底的（`button{cursor:pointer}` 只覆盖 button 元素）。 */
 .btn{height:calc(40px*var(--ui));padding:0 calc(17px*var(--ui));border-radius:var(--r-pill);border:1px solid var(--ghost-line);font-size:calc(15px*var(--ui));display:inline-flex;align-items:center;gap:8px;
-  white-space:nowrap;transition:background .15s,border-color .15s,transform .12s,color .15s}
+  white-space:nowrap;color:inherit;text-decoration:none;cursor:pointer;
+  transition:background .15s,border-color .15s,transform .12s,color .15s}
 .btn:hover{background:var(--ghost-hover);border-color:var(--line-strong)}
 .btn:active{transform:scale(.985)}
 .btn.pri{background:var(--pri-bg);border-color:var(--pri-bg);color:var(--pri-fg);font-weight:600}
