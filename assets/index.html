@@ -3,7 +3,11 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect width='24' height='24' rx='5' fill='%234d6bfe'/%3E%3Cpath d='M6 20V4l12 16V4' fill='none' stroke='white' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
+<link rel="icon" type="image/png" href="/icon0.png">
+<!-- favicon = 启动图标本体 /icon0.png（2026-10-02 用户点名「浏览器上的 ico 图标不对」）。
+     旧写法是内联 SVG data URI（亮蓝平底 + 细描边 N，即被换掉前的 #i-logo 字母），
+     和应用内顶栏 logo（同一天起也改用 /icon0.png）、PS5 主屏上的启动图标不是同一张图。
+     后端 asset_register("/icon0.png") 在 index / install 两个页面都可达。 -->
 <title>PS5 Nexus</title>
 <style>
 /* ============================================================
@@ -80,11 +84,25 @@
    .dragover-mask 的遮罩）以及 --sheen 这种「预先合成的不透明色」都是照暗底算出来的，
    加一套亮色等于把它们全部重新复核一遍 —— 而那正是当初踩过两次的坑。 */
 *{box-sizing:border-box}
-html,body{margin:0;min-height:100%}
+/* 滚动模型（2026-10-02 用户点名）：滚动条必须贴在**内容列侧面**而不是窗口最右缘
+   —— 视口级滚动条离居中的内容列有一大段空隙，看起来「放错位置」。
+   改为容器滚动：body 变 flex 列（顶栏定高 + main 占满剩余），main 是唯一滚动容器，
+   且自身收窄到内容列宽度 ⇒ 滚动条贴着列表/卡片侧面，三个视图共用。
+   ⚠️ 副作用清单：① 顶栏不再有内容从底下穿过（玻璃底色退化为深色，无害）；
+   ② sticky 元素（.fmstick / 表头）的滚动祖先变成 main —— 它们的 top 偏移相应
+   从「顶栏高 + 工具条高」缩为「工具条高」；③ 页脚挪进 main 尾部随内容滚；
+   ④ main 是 overflow 容器本身，不再是 sticky 的「阻断敌人」。 */
+html,body{margin:0;height:100%}
 body{
+  display:flex;flex-direction:column;
   background:var(--page);color:var(--fg);font:18px/1.65 var(--sans);
   -webkit-font-smoothing:antialiased;transition:background .25s,color .25s;
 }
+main{flex:1;min-height:0;overflow-y:auto;overscroll-behavior:contain;
+  width:100%;max-width:var(--maxw);margin:0 auto;padding:0 var(--gut)}
+/* main 已承担内容列的盒模型（限宽 + 居中 + 水平留白），main 里的 .wrap 只剩垂直语义，
+   盒模型必须清零 —— 否则双重限宽/双重留白，内容列凭空瘦一圈。 */
+main .wrap{max-width:none;margin:0;padding:0}
 .sprite{position:absolute;width:0;height:0;overflow:hidden}
 svg.i{width:16px;height:16px;flex:none;fill:none;stroke:currentColor;stroke-width:1.75;stroke-linecap:round;stroke-linejoin:round}
 button{font:inherit;color:inherit;background:none;border:0;cursor:pointer}
@@ -101,7 +119,7 @@ button{font:inherit;color:inherit;background:none;border:0;cursor:pointer}
 @keyframes vin{from{opacity:0;transform:translateY(7px)}to{opacity:1;transform:none}}
 /* 视图内的分区留白收敛：74px 是长页文档的呼吸感，装进视图后显得散 */
 .view .sec{padding:36px 0 0}
-/* 文件行：类型 / 名称 / 修改时间 / 大小 —— 没有进度列 */
+/* 文件行：名称 / 大小 / 修改时间 / 权限 —— 类型列已删，图标即类型 */
 .row.f{grid-template-columns:92px minmax(0,1fr) 118px 104px}
 /* 视图内的吸顶栏底部加一条分隔，告诉用户「下面是内容区」*/
 .pagehead{padding:30px 0 6px}
@@ -110,9 +128,14 @@ button{font:inherit;color:inherit;background:none;border:0;cursor:pointer}
 .pagehead p{margin:0;font-size:17px;color:var(--fg2);line-height:1.7;max-width:74ch}
 
 /* ---------- 吸顶栏 ---------- */
-/* 吸顶栏用不透明同色底：整页本来就是单一深色，模糊在上面产生不了任何视觉差异，
-   却引入一个 color-mix 兼容面 —— 不值得。玻璃模糊只保留给需要透出内容的场景（弹窗遮罩）。*/
-.top{position:sticky;top:0;z-index:20;background:var(--page);border-bottom:1px solid var(--line)}
+/* 玻璃质感（2026-10-02 用户点名「玻璃和模糊透明的效果没看到」）：alpha 从 .94/.88
+   降到 .74/.58 —— 再高模糊就看不见了；blur 10→16px 再叠 saturate(140%)，行从吸顶带
+   底下穿过时透出的是被糊掉的暗影而不是清晰的字。真机 WebKit 若不支持 backdrop-filter，
+   .74 的底色仍足够暗（渐进降级，可读性不依赖模糊）。 */
+.top{position:sticky;top:0;z-index:20;
+  background:linear-gradient(180deg,rgba(10,10,10,.74),rgba(10,10,10,.58));
+  backdrop-filter:blur(16px) saturate(140%);-webkit-backdrop-filter:blur(16px) saturate(140%);
+  border-bottom:1px solid var(--line)}
 /* 🪤 这个容器必须叫 .topbar 而不是 .bar —— 组件进度条也叫 .bar，
    而这里带了 min-height，min-height 会压过 .row .bar 的 height:5px，
    结果是所有进度条被撑成 62px 厚。截图里能看出来，断言看不出来。
@@ -134,9 +157,14 @@ button{font:inherit;color:inherit;background:none;border:0;cursor:pointer}
 .brand .mark{width:30px;height:30px;border-radius:var(--r-sm);object-fit:cover;flex:none;display:block}
 .nav{display:flex;gap:2px;flex-wrap:wrap;margin-left:8px}
 /* 40px 而不是 34px：PS5 是触摸板 / 手柄驱动的光标，不是精确指针设备 */
-.nav button{height:calc(44px*var(--ui));padding:0 calc(16px*var(--ui));border-radius:var(--r-sm);font-size:calc(15px*var(--ui));color:var(--fg3);display:flex;align-items:center;transition:background .15s,color .15s}
-.nav button:hover{background:var(--ghost-hover);color:var(--fg)}
-.nav button[aria-current=true]{background:var(--s5);color:var(--fg);font-weight:600}
+.nav button{height:calc(44px*var(--ui));padding:0 calc(18px*var(--ui));border-radius:7px;font-size:calc(15px*var(--ui));color:rgba(255,255,255,.6);display:flex;align-items:center;transition:background .15s,color .15s}
+/* 选中/悬停 = 扁平黑透明芯片（2026-10-02 五改，照 DeepSeek Harness「预览版」徽章
+   bg-black/25 text-white/95 rounded-[7px] 的实测配置）：纯 rgba(0,0,0,.25) 底 +
+   接近纯白的字，无边框、无渐变、无高光、无投影、无 blur —— 深色顶栏上「更黑一块」
+   本身就是层次，任何叠加特效都是画蛇添足（渐变凝胶版被用户点名「太丑」打回）。
+   ⚠️ 旧的水晶/凝胶玻璃参数（渐变站、inset 高光、外亮边、外投影）不许回来。 */
+.nav button:hover,.nav button:focus-visible{background:rgba(0,0,0,.15);color:rgba(255,255,255,.85)}
+.nav button[aria-current=true]{background:rgba(0,0,0,.25);color:rgba(255,255,255,.95);font-weight:600}
 .sp{flex:1}
 .chip{display:inline-flex;align-items:center;gap:7px;height:calc(28px*var(--ui));padding:0 calc(9px*var(--ui));border-radius:var(--r-pill);border:1px solid var(--line-2);
   background:var(--s2);font-size:calc(13.5px*var(--ui));color:var(--fg2);white-space:nowrap}
@@ -172,7 +200,8 @@ button{font:inherit;color:inherit;background:none;border:0;cursor:pointer}
 .ipchip:hover{background:var(--ghost-hover);border-color:var(--line-strong);color:var(--fg)}
 .ipchip[data-copied]{background:var(--ok-soft);border-color:var(--ghost-line);color:var(--ok)}
 .ipchip[data-copied] .i{color:var(--ok)}
-.btn{height:calc(40px*var(--ui));padding:0 calc(17px*var(--ui));border-radius:var(--r-input);border:1px solid var(--ghost-line);font-size:calc(15px*var(--ui));display:inline-flex;align-items:center;gap:8px;
+/* 按钮走全圆角胶囊（2026-10-02 参考 DSH 按钮样式：icon+文字、细边、stadium 形） */
+.btn{height:calc(40px*var(--ui));padding:0 calc(17px*var(--ui));border-radius:var(--r-pill);border:1px solid var(--ghost-line);font-size:calc(15px*var(--ui));display:inline-flex;align-items:center;gap:8px;
   white-space:nowrap;transition:background .15s,border-color .15s,transform .12s,color .15s}
 .btn:hover{background:var(--ghost-hover);border-color:var(--line-strong)}
 .btn:active{transform:scale(.985)}
@@ -190,12 +219,25 @@ button{font:inherit;color:inherit;background:none;border:0;cursor:pointer}
   background-size:200% 100%;background-position:200% 0;opacity:.34;
   animation:sheen 6.2s ease-in-out infinite}
 @keyframes sheen{0%,58%{background-position:200% 0}100%{background-position:-100% 0}}
-.btn.sm{height:calc(38px*var(--ui));padding:0 calc(15px*var(--ui));font-size:calc(14px*var(--ui));border-radius:var(--r-sm)}
+.btn.sm{height:calc(38px*var(--ui));padding:0 calc(15px*var(--ui));font-size:calc(14px*var(--ui));border-radius:var(--r-pill)}
+/* xs：顶栏专属小号（2026-10-02 用户反馈「主屏图标/关闭进程太大」）。
+   ⚠️ 视觉变小但命中区不能缩 —— PS5 是触摸板/手柄光标：::after 把命中区撑回 40px*--ui
+   （与 .ipchip::after 同一招，C3 断言读 max(rect, ::after) 所以两全）。 */
+.btn.xs{position:relative;height:calc(32px*var(--ui));padding:0 calc(12px*var(--ui));font-size:calc(13px*var(--ui))}
+.btn.xs::after{content:"";position:absolute;left:0;right:0;top:50%;height:calc(40px*var(--ui));transform:translateY(-50%)}
 .btn.icon{width:calc(40px*var(--ui));padding:0;justify-content:center;border-color:transparent}
 .btn.icon:hover{border-color:var(--ghost-line)}
 /* 禁用：aria-disabled 保住 title（disabled 会带 pointer-events:none，提示永远弹不出来） */
 .btn[aria-disabled=true]{opacity:.4}
 .btn[aria-disabled=true]:hover{background:none;border-color:var(--ghost-line);cursor:not-allowed}
+/* ---------- 键盘 / 手柄聚焦环 ----------
+   用 inset box-shadow 而不是 outline + offset：outline 的偏移量**不会跟着圆角走**，
+   在小圆角控件上会画成一个脱开的方框、四角挂着悬浮圆弧（旧版 .gcard 时代的坑）；
+   inset 沿 border-radius 行走且永不外溢到邻行 —— 「看得见」和「不越界」一次满足。 */
+.btn:focus-visible{outline:none;border-color:var(--brand);box-shadow:inset 0 0 0 1px var(--brand)}
+.nav button:focus-visible,.quick button:focus-visible,.seg button:focus-visible,.ipchip:focus-visible{
+  outline:none;box-shadow:inset 0 0 0 2px var(--brand-line)}
+.picker .r:focus-visible{outline:none;box-shadow:inset 0 0 0 2px var(--brand-line)}
 /* ---------- 下拉菜单（工具栏「上传」用）----------
    为什么不用 <select>：条目要带图标 + 副标题，且命中区必须 ≥44px（PS5 是触摸板光标）。
    ⚠️ 菜单挂在 .pop 上做定位锚，不用 position:fixed + 手算坐标 —— 那会在水平滚动时漂移，
@@ -214,10 +256,12 @@ button{font:inherit;color:inherit;background:none;border:0;cursor:pointer}
 .popmenu button svg{margin-top:2px;color:var(--brand-text)}
 .popmenu button i{display:block;margin-top:3px;font-style:normal;font-size:calc(13.5px*var(--ui));color:var(--fg3)}
 .pill{display:inline-flex;align-items:center;gap:6px;height:calc(26px*var(--ui));padding:0 calc(10px*var(--ui));border-radius:var(--r-pill);font-size:calc(13px*var(--ui));font-weight:600;white-space:nowrap}
-.pill.b{background:var(--brand-soft);color:var(--brand-text)}
-.pill.g{background:var(--ok-soft);color:var(--ok)}
-.pill.r{background:var(--bad-soft);color:var(--bad)}
-.pill.n{background:var(--s5);color:var(--fg2)}
+/* 小标签（参考 DSH badge）：软底 + 同色文字 + 同色细边 —— 边框让标签在暗底上
+   更「贴纸」、层次更清楚；box-sizing:border-box 全局生效 ⇒ 高度不变。 */
+.pill.b{background:var(--brand-soft);color:var(--brand-text);border:1px solid var(--brand-line)}
+.pill.g{background:var(--ok-soft);color:var(--ok);border:1px solid rgba(94,201,138,.35)}
+.pill.r{background:var(--bad-soft);color:var(--bad);border:1px solid rgba(255,123,114,.35)}
+.pill.n{background:var(--s5);color:var(--fg2);border:1px solid var(--line-2)}
 
 /* ---------- Hero ---------- */
 .hero{position:relative;text-align:center;padding:78px 0 62px}
@@ -357,11 +401,14 @@ button{font:inherit;color:inherit;background:none;border:0;cursor:pointer}
    顶栏**底下**被盖掉一半，而这种偏差在 1920 的测试视口里永远看不到。
    ⚠️ 祖先不能有 overflow（sticky 会改成相对那个 overflow 容器定位）：本页
    body / main / .view / .wrap / .sec 都没有，这是它能成立的前提。别往里加。
-   ⚠️ 背景必须不透明，否则行会从按钮底下穿过去。
+   ⚠️ 背景走玻璃（与 .top 同参数，2026-10-02）：行会从按钮底下穿过去，所以 alpha
+   不能低于 .58 —— 透出的必须是「糊掉的暗影」而不是清晰可读的字。
    ⚠️ 分隔线用 box-shadow 而不是 border：border 会让高度 +1px，
    粘住/松开的那一瞬下面的内容整体跳一下。 */
-.fmstick{position:sticky;top:var(--topH,83px);z-index:15;background:var(--page);padding:10px 0 10px}
-.fmstick.pinned{box-shadow:0 1px 0 var(--line)}
+.fmstick{position:sticky;top:0;z-index:15;
+  background:linear-gradient(180deg,rgba(10,10,10,.74),rgba(10,10,10,.58));
+  backdrop-filter:blur(16px) saturate(140%);-webkit-backdrop-filter:blur(16px) saturate(140%);padding:10px 0 10px}
+.fmstick.pinned{box-shadow:0 1px 0 var(--line),inset 0 1px 0 rgba(255,255,255,.05)}
 /* 删除进度条：就地显示在文件视图里。
    删除已经改成任务（TASK_KIND_DELETE）—— 一个游戏目录上万个条目，在请求里做完必然超时，
    所以真正的进度只有任务中心知道。而任务视图目前**没有导航入口**（导航只有 文件/PKG/存档），
@@ -376,31 +423,59 @@ button{font:inherit;color:inherit;background:none;border:0;cursor:pointer}
 .jobbar .track{flex:1;height:9px;margin:0;min-width:120px}
 .jobbar .track i{transition:width .35s linear}
 .jobbar .jp{font:600 13.5px var(--mono);font-variant-numeric:tabular-nums;color:var(--brand-text);min-width:46px;text-align:right}
-.fmbar .btn.danger{color:var(--bad)}
-/* 顶栏「关闭进程」用同一个 danger 语义色；原来只挂在 .fmbar 下，顶栏拿不到 */
-.btn.danger{color:var(--bad)}
-.fmtable{background:var(--s4);border:1px solid var(--line);border-radius:var(--r-card);overflow:hidden}
+/* 危险按钮（删除 / 关闭进程）：红字升级为「红字 + 红软底 + 红细边」的实心胶囊
+   （2026-10-02 用户要求红底突出；软底 badge 样式参考 DSH 截图）。不可逆操作
+   必须在整排按钮里第一眼跳出来。顶栏与工具栏共用 —— 原来 .fmbar 特例已并入。 */
+.btn.danger{color:var(--bad);background:var(--bad-soft);border-color:rgba(255,123,114,.35);font-weight:600}
+.btn.danger:hover{background:#3a1815;border-color:rgba(255,123,114,.6)}
+/* ⚠️ 这里绝不能有 overflow:hidden —— 表头冻结（thead th position:sticky）的
+   前提是 th 与页面滚动器之间没有任何 overflow 容器；overflow:hidden 会把 sticky
+   困在一个永不滚动的盒子里、静默失效（2026-10-02 才定位的「表头 sticky 不可能」真因）。
+   圆角裁剪改由单元格自己承担：th 首尾 + 最后一行 td 首尾。 */
+.fmtable{background:var(--s4);border:1px solid var(--line);border-radius:var(--r-card)}
 /* 行高与字号：2026-10-01 用户反馈「列表行高加高些然后文字都变大一些」。
    目标设备是 1920×970 的 PS5 浏览器 + 10 英尺观看距离 ⇒ 18.5px 正文 / 17px 行内边距
    （改前 16.5px / 13px），表头同步到 15px。
    ⚠️ 这里调的是**内容**，刻意不走 --ui 那个控件杠杆：正文跟着控件一起乘会把排版
    比例搅乱（--ui 的注释里已经写明这条边界）。⚠️ 全仓只有文件视图用 .fmtable
    （#fsPanel），PKG / 存档走卡片布局，所以这次改动的半径是可控的。 */
-.fmtable table{width:100%;border-collapse:collapse;font-size:18.5px;table-layout:fixed}
-.fmtable th{background:var(--s3);font:600 15px/1 var(--sans);letter-spacing:.05em;text-transform:uppercase;color:var(--fg3);text-align:left;padding:17px 20px;border-bottom:1px solid var(--line);cursor:pointer;user-select:none;white-space:nowrap}
+/* border-collapse:separate 而不是 collapse：collapse 模型里单元格边框归 table 所有，
+   sticky 的 th 被滚走时边框/背景会出现撕裂残影（Chromium/WebKit 同病）。
+   border-spacing:0 + td 自带 border-top，视觉与 collapse 完全一致。 */
+.fmtable table{width:100%;border-collapse:separate;border-spacing:0;font-size:18.5px;table-layout:fixed}
+/* 表头下沿不再画线（2026-10-02 用户点名去掉）：表头自有 --s3 底色做分区，
+   线是多余的；⚠️ 首行 td 的 border-top 也必须压掉，否则会留一条更淡的
+   --line-div——「去掉一条线」不能只删一半。 */
+/* 表头 = 冻结 + 毛玻璃（2026-10-02 用户点名，参考 DSH 导航条）：
+   ⚠️ 滚动容器是 main（2026-10-02 起不再是页面级）—— fmstick 钉在 main 顶（top:0），
+   表头钉在它下面 ⇒ top 只需 --fmH（工具条实测高），不再叠加顶栏高度。
+   ⚠️ 背景走玻璃（与 .fmstick 同参数）：行从表头底下穿过，透出的必须是「糊掉的暗影」
+   ——alpha 低于 .6 就能读出字了，那是失败状态。
+   ⚠️ z-index 14 < .fmstick 的 15：两段粘性元素相邻，层序保证工具条压得住表头。 */
+.fmtable th{position:sticky;top:var(--fmH,0px);z-index:14;
+  background:linear-gradient(180deg,rgba(10,10,10,.72),rgba(10,10,10,.6));
+  backdrop-filter:blur(16px) saturate(140%);-webkit-backdrop-filter:blur(16px) saturate(140%);
+  font:600 15px/1 var(--sans);letter-spacing:.05em;text-transform:uppercase;color:var(--fg3);text-align:left;padding:17px 20px;cursor:pointer;user-select:none;white-space:nowrap}
+/* 圆角裁剪从 .fmtable 移交过来（overflow:hidden 已删）：首行 th 两角 + 末行 td 两角 */
+.fmtable thead th:first-child{border-top-left-radius:calc(var(--r-card) - 1px)}
+.fmtable thead th:last-child{border-top-right-radius:calc(var(--r-card) - 1px)}
+.fmtable tbody tr:last-child td:first-child{border-bottom-left-radius:calc(var(--r-card) - 1px)}
+.fmtable tbody tr:last-child td:last-child{border-bottom-right-radius:calc(var(--r-card) - 1px)}
 .fmtable th[data-sort]::after{content:"";display:inline-block;width:0;height:0;margin-left:5px;vertical-align:middle}
 .fmtable th.sort-asc::after{border-left:4px solid transparent;border-right:4px solid transparent;border-bottom:5px solid var(--fg3)}
 .fmtable th.sort-desc::after{border-left:4px solid transparent;border-right:4px solid transparent;border-top:5px solid var(--fg3)}
 .fmtable td{padding:17px 20px;border-top:1px solid var(--line-div);vertical-align:middle}
+.fmtable tbody tr:first-child td{border-top:none}
 .fmtable tbody tr{cursor:pointer;transition:background .12s}
 .fmtable tbody tr:hover{background:var(--s3)}
 .fmtable tbody tr.sel{background:var(--brand-soft)}
 /* ---- 列宽必须显式声明，这是**功能性**要求而不是审美 ----
    ⚠️ 默认的 table-layout:auto 会把「名称」列撑到最长文件名的 max-content：
    18.5px 字号下一个 121 字符的文件名让这一列涨到 1281px，整张表因此比容器宽
-   147px，而 .fmtable 自己是 overflow:hidden ⇒ 「修改时间」和「权限」两列被**整列
-   裁掉**，页面级 scrollWidth 却完全正常（溢出被 overflow:hidden 吃掉了，
-   任何用 documentElement.scrollWidth 写的断言都看不见）。
+   147px ⇒ 「修改时间」和「权限」两列被**整列裁掉**（当年 .fmtable 还有
+   overflow:hidden，溢出被吃掉、页面级 scrollWidth 完全正常，
+   任何用 documentElement.scrollWidth 写的断言都看不见；现在 overflow 虽已删——
+   表头 sticky 的前提——风险反而更直接：超宽表会顶破卡片边框）。
    改前的余量只有 **2px**（1678 / 1680）—— 字号从 16.5 涨到 18.5 就直接翻车，
    所以不能指望 auto 布局的巧合，必须把列宽钉死。
    ⚠️ 固定布局下宽度取自**第一行**（thead），所以这里同时覆盖 th 与 td。
@@ -408,18 +483,25 @@ button{font:inherit;color:inherit;background:none;border:0;cursor:pointer}
    （实测被压成「2025/09/3…」）—— 日期被截断是实打实的信息损失。
    定宽之后表宽恒等于 100%，屏幕再窄也只是「名称」列变窄，不会溢出。 */
 .fmtable .csel{width:52px;text-align:center}
-.fmtable .ctype{width:130px}
-.fmtable .csize{width:130px}
-.fmtable .ctime{width:225px}
-.fmtable .cmode{width:100px}
-/* 四列一律 nowrap + 省略号：ctype 原来没有 nowrap，字号一大「目录」就被压成竖排的
-   「目 / 录」（列宽 77px，两个 18.5px 汉字 37px 刚好卡在 77-40=37 的边界上）。 */
-.fmtable .ctype,.fmtable .csize,.fmtable .ctime,.fmtable .cmode{
+/* 2026-10-02 —— 「类型」列整列删除（用户：不需要显示）。删掉后把 130px 份额
+   拆给信息列（用户：其他列的信息显示不全），而不是留给「名称」：
+   csize 130→150（11.6 GB 在 18.5px 下实测 ~110px，留余量给 TB 级）
+   ctime 225→280（完整「2025/09/30 10:40:56」不再碰省略号）
+   cmode 100→110（三段式 -rwxr-xr-x 的 mono 串更稳）。
+   「名称」列仍是 1fr，总固定宽 637→597，比删列前净少 40px。 */
+.fmtable .csize{width:150px}
+.fmtable .ctime{width:280px}
+.fmtable .cmode{width:110px}
+/* 信息列一律 nowrap + 省略号：字号一大内容就被压成竖排（Range.getClientRects
+   断言抓的就是这个），列宽声明只是必要条件，nowrap 是充分条件。 */
+.fmtable .csize,.fmtable .ctime,.fmtable .cmode{
   white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-variant-numeric:tabular-nums}
 .fmtable .csize{text-align:right}
 .fmtable .ctime{color:var(--fg3)}
 .fmtable .cmode{font-family:var(--mono);color:var(--fg3)}
-.fmtable .cname{display:flex;align-items:center;gap:10px;min-width:0}
+/* ⚠️ 只作用于 td：原来写成 .cname 连 th 一起命中，th 变 flex 后失去 table-cell
+   的垂直居中，表头「名称」比「大小/修改时间/权限」高一截（2026-10-02 用户截图）。 */
+.fmtable td.cname{display:flex;align-items:center;gap:10px;min-width:0}
 .fmtable .cname .nm{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .fmtable .cname .nm em{font-style:normal;font:600 12.5px/1 var(--sans);padding:2px 7px;border-radius:4px;background:var(--s5);color:var(--fg3);margin-right:7px}
 /* 目录行名称品牌色（对照旧项目 special-folder-icon：文件夹与普通文件区分） */
@@ -450,8 +532,12 @@ button{font:inherit;color:inherit;background:none;border:0;cursor:pointer}
 .scrim{position:fixed;inset:0;background:rgba(0,0,0,.62);backdrop-filter:blur(var(--blur));display:none;z-index:50}
 .scrim.on{display:grid;place-items:center;animation:fade .16s ease-out both}
 @keyframes fade{from{opacity:0}to{opacity:1}}
-.dlg{width:min(660px,94vw);max-height:88vh;overflow:auto;background:var(--page);border:1px solid var(--line-2);border-radius:var(--r-card);
-  box-shadow:0 30px 80px -20px rgba(0,0,0,.7);animation:pop .24s cubic-bezier(.16,1,.3,1) both}
+.dlg{width:min(660px,94vw);max-height:88vh;overflow:auto;
+  background:linear-gradient(180deg,var(--s2),var(--page) 132px);
+  border:1px solid var(--line-2);border-radius:var(--r-card);
+  box-shadow:0 30px 80px -20px rgba(0,0,0,.7),
+    inset 0 1px 0 rgba(255,255,255,.07),inset 1px 0 0 rgba(255,255,255,.03),inset -1px 0 0 rgba(255,255,255,.03);
+  animation:pop .24s cubic-bezier(.16,1,.3,1) both}
 @keyframes pop{from{opacity:0;transform:translateY(14px) scale(.99)}to{opacity:1;transform:none}}
 .dlg-h{display:flex;align-items:center;gap:11px;padding:20px 24px 14px;border-bottom:1px solid var(--line)}
 .dlg-h h2{margin:0;font:600 19px var(--sans)}
@@ -459,10 +545,14 @@ button{font:inherit;color:inherit;background:none;border:0;cursor:pointer}
 .dlg-b{padding:20px 24px 4px}
 .fld{margin-bottom:18px}
 .fld>label{display:block;font-size:13.5px;color:var(--fg3);margin-bottom:9px}
-.fld input[type="password"],.fld input[type="text"]{width:100%;height:44px;padding:0 14px;border:1px solid var(--line);border-radius:var(--r-input);background:var(--s3);color:var(--fg);font:15px var(--mono)}
+.fld input[type="password"],.fld input[type="text"],.fld input[type="number"]{width:100%;height:44px;padding:0 14px;border:1px solid var(--line);border-radius:var(--r-input);background:var(--s1);color:var(--fg);font:15px var(--mono)}
+/* 输入框底色用 --s1（#191919）：2026-10-02 用户拿 DSH 的输入区截图点名「输入框背景
+   应该是这种灰色」——实测参考图底 = #19191b、外层页 #0f0f0f（灰比页亮 +10）。
+   本页底 #0a0a0a 上 --s1 的亮度差 +15，感知上与参考图同构；原来的 --s3(#0f0f0f)
+   和页面几乎同色，输入框「看不出是个框」。 */
 .fld input[type="password"]{letter-spacing:.06em}
-.fld input[type="password"]::placeholder,.fld input[type="text"]::placeholder{color:var(--fg3);letter-spacing:0}
-.fld input[type="password"]:focus,.fld input[type="text"]:focus{outline:none;border-color:var(--brand);box-shadow:0 0 0 3px var(--brand-soft)}
+.fld input[type="password"]::placeholder,.fld input[type="text"]::placeholder,.fld input[type="number"]::placeholder{color:var(--fg3);letter-spacing:0}
+.fld input[type="password"]:focus,.fld input[type="text"]:focus,.fld input[type="number"]:focus{outline:none;border-color:var(--brand);box-shadow:0 0 0 3px var(--brand-soft)}
 .crumbs{display:flex;align-items:center;gap:3px;flex-wrap:wrap;padding:11px 13px;border:1px solid var(--line);border-radius:var(--r-input);background:var(--s3);font-family:var(--mono);font-size:15px;color:var(--fg2)}
 .crumbs button{padding:4px 7px;border-radius:6px;font:inherit;color:var(--fg3)}
 .crumbs button:hover{background:var(--s5);color:var(--fg)}
@@ -477,8 +567,9 @@ button{font:inherit;color:inherit;background:none;border:0;cursor:pointer}
 #fsRoots button.nasadd{border-style:dashed}
 #fsRoots .nax{margin-left:5px;color:var(--muted);font-size:11px;cursor:pointer;padding:0 2px;user-select:none}
 #fsRoots .nax:hover{color:var(--bad)}
-#fsRoots .nasedit input{max-width:230px;padding:5px 8px;border-radius:6px;border:1px solid var(--ghost-line);background:var(--s3);color:var(--text);font-size:12.5px}
-.quick button{height:calc(38px*var(--ui));padding:0 calc(14px*var(--ui));border:1px solid var(--line);border-radius:var(--r-pill);background:var(--s3);font-size:calc(14px*var(--ui));color:var(--fg2);display:flex;align-items:center;gap:7px}
+#fsRoots .nasedit input{max-width:230px;padding:5px 8px;border-radius:6px;border:1px solid var(--ghost-line);background:var(--s1);color:var(--text);font-size:12.5px}
+.quick button{height:calc(38px*var(--ui));padding:0 calc(14px*var(--ui));border:1px solid var(--line);border-radius:var(--r-pill);background:var(--s3);font-size:calc(14px*var(--ui));color:var(--fg2);display:flex;align-items:center;gap:7px;
+  transition:background .15s,border-color .15s,color .15s}
 .quick button:hover{border-color:var(--line-2);color:var(--fg)}
 .quick button[aria-pressed=true]{border-color:var(--brand-line);background:var(--brand-soft);color:var(--brand-text);font-weight:600}
 .cbrow{display:flex;gap:12px;align-items:flex-start;padding:15px;border:1px solid var(--line);border-radius:var(--r-input);background:var(--s3)}
@@ -491,10 +582,23 @@ button{font:inherit;color:inherit;background:none;border:0;cursor:pointer}
 .dlg-f{display:flex;gap:10px;justify-content:flex-end;padding:18px 24px 22px}
 
 /* ---------- 轻提示 toast（诚实反馈的最小落点：真机下无契约的动作给可见文案） ---------- */
-.toast{position:fixed;left:50%;bottom:32px;transform:translate(-50%,10px);background:var(--s5);color:var(--fg);
-  border:1px solid var(--line-2);padding:12px 20px;border-radius:var(--r-pill);font-size:14.5px;box-shadow:var(--shadow);
+.toast{position:fixed;left:50%;bottom:32px;transform:translate(-50%,10px);
+  background:rgba(38,38,38,.92);backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);color:var(--fg);
+  border:1px solid var(--line-2);padding:12px 20px;border-radius:var(--r-pill);font-size:14.5px;
+  box-shadow:var(--shadow),inset 0 1px 0 rgba(255,255,255,.06);
   opacity:0;pointer-events:none;transition:opacity .18s,transform .18s;z-index:70;max-width:min(560px,90vw)}
 .toast.on{opacity:1;transform:translate(-50%,0)}
+
+/* ---------- 滚动条（WebKit 专属选择器，PS5 浏览器即 WebKit）----------
+   默认滚动条在近黑底上是一条亮灰长条，非常出戏。收成窄 thumb + 透明轨道：
+   border 用页面底色镂空，thumb 看起来是悬浮在轨道里的一段玻璃，而不是塞满的柱子。 */
+::-webkit-scrollbar{width:12px;height:12px}
+::-webkit-scrollbar-track{background:transparent}
+::-webkit-scrollbar-thumb{background:var(--s5);border-radius:8px;border:3px solid var(--page)}
+::-webkit-scrollbar-thumb:hover{background:var(--line-strong)}
+::-webkit-scrollbar-corner{background:transparent}
+/* 文字选中色：默认是浏览器蓝，和品牌蓝不是同一个蓝 —— 一并归队 */
+::selection{background:var(--brand);color:#fff}
 
 /* ---------- 关闭进程后的收尾屏 ----------
    请求一发出，进程几秒内就没了，页面再轮询只会一直失败。「已经关掉了」必须由页面自己说出来，
@@ -529,27 +633,33 @@ button{font:inherit;color:inherit;background:none;border:0;cursor:pointer}
 /* ---------- 分段控件 / 搜索框（游戏页与存档页共用） ---------- */
 .libbar,.savebar{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
 .seg{display:flex;gap:2px;padding:3px;border:1px solid var(--line);border-radius:var(--r-input);background:var(--s3)}
-.seg button{height:32px;padding:0 13px;border-radius:7px;font-size:13px;color:var(--fg3);display:inline-flex;align-items:center;gap:6px}
+.seg button{height:32px;padding:0 13px;border-radius:7px;font-size:13px;color:var(--fg3);display:inline-flex;align-items:center;gap:6px;transition:background .15s,color .15s}
 .seg button:hover{color:var(--fg)}
 .seg button[aria-pressed=true]{background:var(--s5);color:var(--fg);font-weight:600}
 .seg button .num{font-size:12px;color:var(--fg3)}
 .search{display:flex;align-items:center;gap:9px;height:38px;padding:0 13px;border:1px solid var(--line-2);
-  border-radius:var(--r-input);background:var(--s3);color:var(--fg3);min-width:min(300px,100%)}
+  border-radius:var(--r-input);background:var(--s1);color:var(--fg3);min-width:min(300px,100%)}
 .search input{flex:1;min-width:0;border:0;background:none;color:var(--fg);font:13.5px var(--sans);outline:none}
 .search input::placeholder{color:var(--fg4)}
 .count{font-size:12.5px;color:var(--fg3)}
 
 /* ---------- 游戏：封面网格 ----------
-   封面来源 = PKG 内的 sce_sys/icon0.png，它和 param.json 在同一个 PFS 镜像里。
-   原型里没有真 PKG 可抽，所以封面是程序化替身；抽不到时的回退态也在这里 ——
-   一排卡片里留一个视觉空洞，比「有封面」这件事本身更糟。 */
+   封面来源 = PKG 容器里的 icon0.png（后端 /api/pkg/icon 直接抽条目并吐 PNG）。
+   提取不到（目录型条目 / fPKG / 加密容器）时不再留灰色空洞 —— 兜底 = 按 title id
+   哈希选一张渐变 + 大号 ID 白字（2026-10-02 用户点名），真封面加载成功就盖上去。 */
 .covers{display:grid;grid-template-columns:repeat(auto-fill,minmax(176px,1fr));gap:14px;margin-top:14px}
 .gcard{background:var(--s3);border:1px solid var(--line);border-radius:var(--r-panel);padding:10px;
-  display:flex;flex-direction:column;gap:10px;transition:border-color .18s,background .18s,transform .18s}
-.gcard:hover{border-color:var(--line-2);background:var(--s2);transform:translateY(-2px)}
+  display:flex;flex-direction:column;gap:10px;
+  transition:border-color .18s,background .18s,transform .18s,box-shadow .18s}
+/* 悬停 = 整卡抬升 + 阴影落点加深（原来只有 border/底色微变，浮起得「没有说服力」）；
+   封面同步给一圈更亮的发丝边 + 投影，读起来像卡片里的实体盒装。 */
+.gcard:hover{border-color:var(--line-2);background:var(--s2);transform:translateY(-3px);
+  box-shadow:0 2px 6px rgba(0,0,0,.35),0 22px 44px -18px rgba(0,0,0,.65)}
+.gcard:hover .cover{box-shadow:inset 0 0 0 1px rgba(255,255,255,.11),0 10px 26px -12px rgba(0,0,0,.6)}
 .gcard:focus-visible{outline:none;box-shadow:0 0 0 2px var(--brand),0 0 0 4px var(--brand-soft)}
 .cover{position:relative;aspect-ratio:3/4;border-radius:12px;overflow:hidden;display:grid;place-items:center;
-  border:1px solid var(--line-2);background:var(--s5)}
+  border:1px solid var(--line-2);background:var(--s5);
+  box-shadow:inset 0 0 0 1px rgba(255,255,255,.06);transition:box-shadow .18s}
 .cover::after{content:"";position:absolute;inset:0;background:linear-gradient(150deg,rgba(255,255,255,.16),transparent 46%)}
 .cover .mark{position:relative;font:700 26px/1 var(--sans);letter-spacing:.1em;color:#fff;text-shadow:0 2px 16px rgba(0,0,0,.55)}
 .cover .plat{position:absolute;left:8px;top:8px;z-index:2;font:700 10px/1 var(--sans);letter-spacing:.08em;
@@ -563,16 +673,27 @@ button{font:inherit;color:inherit;background:none;border:0;cursor:pointer}
 .cover.locked::before{content:"";position:absolute;inset:0;background:rgba(0,0,0,.36)}
 .cover.locked .mark{opacity:.32}
 .cover.locked .lock{position:absolute;right:8px;top:8px;z-index:2;width:22px;height:22px;color:#fff}
-/* 回退态：没有 icon0.png 时不留空洞，但一眼能看出「这是占位」 */
-.cover.fb{background:var(--s5);border-style:dashed}
-.cover.fb::after{display:none}
-.cover.fb .mark{font:600 13px/1.4 var(--mono);letter-spacing:.02em;color:var(--fg4);text-align:center;padding:0 8px}
-.cover.fb .cap{position:absolute;bottom:9px;left:0;right:0;text-align:center;font-size:11px;color:var(--fg4)}
-.gbody{display:flex;flex-direction:column;gap:7px;min-width:0}
+/* 封面层级：渐变替身 + 大 ID 是**兜底**（永远在）；/api/pkg/icon 能吐出 PNG 时
+   <img.cimg> 盖上去（z1），真封面加载失败 onerror 自删 ⇒ 兜底自然露出。
+   ::after 高光 z1 同级但树序在后 ⇒ 压在真封面上（统一光泽）；plat 徽章 z2 最上。 */
+.cover .cimg{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;z-index:1}
+.cover::after{z-index:1}
+.gbody{display:flex;flex-direction:column;gap:7px;min-width:0;flex:1}
 .gtitle{font:600 13.5px/1.4 var(--sans);overflow:hidden;text-overflow:ellipsis;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}
+/* 状态标签挂在游戏名后面（2026-10-02 用户点名：不是按钮没必要大，别把按钮挤串行）：
+   标题行改 flex，pill 收到 20px 小徽章级，flex:none 不被标题挤压。 */
+.gtitleline{display:flex;align-items:flex-start;gap:7px;min-width:0}
+.gtitleline .gtitle{flex:1;min-width:0}
+.gtitleline .pill{flex:none;height:20px;padding:0 8px;font:600 10.5px/20px var(--sans);margin-top:1px}
 .gmeta{display:flex;flex-direction:column;gap:3px;font:11.5px/1.5 var(--mono);color:var(--fg3);font-variant-numeric:tabular-nums}
-.gacts{display:flex;align-items:center;gap:8px;margin-top:2px;flex-wrap:wrap}
+/* 卡片脚**钉底**（2026-10-02 用户截图：标题一行/两行的卡片按钮有上有下）——
+   gcard 已是等高网格，gbody flex:1 + gacts margin-top:auto 把按钮统一压到卡片底沿。 */
+.gacts{display:flex;align-items:center;gap:8px;margin-top:auto;flex-wrap:wrap}
 .gacts .btn{margin-left:auto}
+/* 卡片脚按钮**同比例**（2026-10-02 用户截图反馈「按钮不成比例」）：
+   .btn.sm ≈44px 站在 ≈30px 的 pill 旁边头重脚轻 ⇒ .gacts 里把按钮收到同档。
+   规则落在 .btn.sm 之后 ⇒ 同特异性靠后者胜，出块即生效。 */
+.gacts .btn{height:calc(30px*var(--ui));padding:0 calc(13px*var(--ui));font-size:calc(13px*var(--ui))}
 
 /* ---------- 存档：三栏工作台 + 终端日志 ----------
    骨架借自 Garlic SaveMgr（左容器列表 / 右详情 / 底部终端日志），
@@ -730,10 +851,10 @@ button{font:inherit;color:inherit;background:none;border:0;cursor:pointer}
          （切到 PKG 管理 / 存档就找不到了，而它跟当前目录毫无关系）。
          ⚠️ 绝不能改成启动即执行：它调内核 sceAppInstUtil*，游戏运行时执行会把主机搞死，
          所以必须保持「手动点 + 二次确认」。 -->
-    <button class="btn sm" id="btnAppIcon" title="在 PS5 主屏添加本应用的启动图标（请勿在游戏运行时执行）">主屏图标</button>
+    <button class="btn xs" id="btnAppIcon" title="在 PS5 主屏添加本应用的启动图标（请勿在游戏运行时执行）">主屏图标</button>
     <!-- 关闭进程：放在最右（电源位）。⚠️ 这是**不可逆**的 —— PS5 上没有 service manager，
          没有任何东西会把它重新拉起来，退出后必须回到主机上重新运行 payload。所以二次确认。 -->
-    <button class="btn sm danger" id="btnShutdown" title="关闭 PS5 Nexus 进程（不会被自动重启）"><svg class="i" style="width:15px;height:15px"><use href="#i-x"/></svg>关闭进程</button>
+    <button class="btn xs danger" id="btnShutdown" title="关闭 PS5 Nexus 进程（不会被自动重启）">关闭进程</button>
   </div>
 </header>
 
@@ -783,7 +904,7 @@ button{font:inherit;color:inherit;background:none;border:0;cursor:pointer}
             <button class="btn sm" id="btnUpload" aria-haspopup="true" aria-expanded="false" title="上传文件或整个文件夹"><svg class="i" style="width:15px;height:15px"><use href="#i-up"/></svg>上传<span class="caret"></span></button>
             <div class="popmenu" id="upMenu" role="menu" aria-label="上传方式">
               <button type="button" role="menuitem" data-up="file"><svg class="i" style="width:15px;height:15px"><use href="#i-up"/></svg><span>上传文件</span></button>
-              <button type="button" role="menuitem" data-up="folder"><svg class="i" style="width:15px;height:15px"><use href="#i-folder"/></svg><span>上传文件夹<i>保留目录结构</i></span></button>
+              <button type="button" role="menuitem" data-up="folder"><svg class="i" style="width:15px;height:15px"><use href="#i-folder"/></svg><span>上传文件夹</span></button>
             </div>
           </span>
           <button class="btn sm" id="btnNewText" title="新建文本文件">新建文本</button>
@@ -800,16 +921,15 @@ button{font:inherit;color:inherit;background:none;border:0;cursor:pointer}
           <thead><tr>
             <th class="csel"><label class="selhit"><input type="checkbox" id="selAll"></label></th>
             <th class="cname" data-sort="name">名称</th>
-            <th class="ctype" data-sort="type">类型</th>
             <th class="csize" data-sort="size">大小</th>
             <th class="ctime" data-sort="mtime">修改时间</th>
             <th class="cmode" data-sort="mode">权限</th>
           </tr></thead>
           <tbody id="fsTbody">
-            <tr data-dir="/mnt/ext1/data"><td class="csel"></td><td class="cname"><span class="nm"><svg class="i" style="width:18px;height:18px"><use href="#i-folder" xlink:href="#i-folder"/></svg>data</span></td><td class="ctype">目录</td><td class="csize">—</td><td class="ctime">—</td><td class="cmode">—</td></tr>
-            <tr data-dir="/mnt/ext1/games"><td class="csel"></td><td class="cname"><span class="nm"><svg class="i" style="width:18px;height:18px"><use href="#i-folder" xlink:href="#i-folder"/></svg>games</span></td><td class="ctype">目录</td><td class="csize">—</td><td class="ctime">—</td><td class="cmode">—</td></tr>
-            <tr data-path="/mnt/ext1/games/PPSA28495-app.rar"><td class="csel"><label class="selhit"><input type="checkbox" data-fsck="1"></label></td><td class="cname"><span class="nm"><svg class="i" style="width:18px;height:18px"><use href="#i-archive" xlink:href="#i-archive"/></svg>PPSA28495-app.rar</span></td><td class="ctype">归档</td><td class="csize">11.6 GB</td><td class="ctime">—</td><td class="cmode">—</td></tr>
-            <tr data-path="/mnt/ext1/games/PPSA22265-app.pkg"><td class="csel"><label class="selhit"><input type="checkbox" data-fsck="1"></label></td><td class="cname"><span class="nm"><svg class="i" style="width:18px;height:18px"><use href="#i-lib" xlink:href="#i-lib"/></svg>PPSA22265-app.pkg</span></td><td class="ctype">安装包</td><td class="csize">8.18 GB</td><td class="ctime">—</td><td class="cmode">—</td></tr>
+            <tr data-dir="/mnt/ext1/data"><td class="csel"><label class="selhit"><input type="checkbox" data-fsck="1"></label></td><td class="cname"><span class="nm"><svg class="i" style="width:18px;height:18px"><use href="#i-folder" xlink:href="#i-folder"/></svg>data</span></td><td class="csize">—</td><td class="ctime">—</td><td class="cmode">—</td></tr>
+            <tr data-dir="/mnt/ext1/games"><td class="csel"><label class="selhit"><input type="checkbox" data-fsck="1"></label></td><td class="cname"><span class="nm"><svg class="i" style="width:18px;height:18px"><use href="#i-folder" xlink:href="#i-folder"/></svg>games</span></td><td class="csize">—</td><td class="ctime">—</td><td class="cmode">—</td></tr>
+            <tr data-path="/mnt/ext1/games/PPSA28495-app.rar"><td class="csel"><label class="selhit"><input type="checkbox" data-fsck="1"></label></td><td class="cname"><span class="nm"><svg class="i" style="width:18px;height:18px"><use href="#i-archive" xlink:href="#i-archive"/></svg>PPSA28495-app.rar</span></td><td class="csize">11.6 GB</td><td class="ctime">—</td><td class="cmode">—</td></tr>
+            <tr data-path="/mnt/ext1/games/PPSA22265-app.pkg"><td class="csel"><label class="selhit"><input type="checkbox" data-fsck="1"></label></td><td class="cname"><span class="nm"><svg class="i" style="width:18px;height:18px"><use href="#i-lib" xlink:href="#i-lib"/></svg>PPSA22265-app.pkg</span></td><td class="csize">8.18 GB</td><td class="ctime">—</td><td class="cmode">—</td></tr>
           </tbody>
         </table>
         <div id="fsEmpty" class="fmempty" style="display:none">空目录</div>
@@ -817,7 +937,7 @@ button{font:inherit;color:inherit;background:none;border:0;cursor:pointer}
       </div>
       <div style="display:flex;justify-content:space-between;margin-top:10px;font-size:13.5px;color:var(--muted)">
         <span id="fsStatus">共 0 项</span>
-        <span>可直接把文件拖进窗口上传</span>
+        <!-- 上传提示只保留页脚那一条（2026-10-02 用户指出右下角两条文案重复） -->
       </div>
       <input type="file" id="upFile" multiple hidden>
       <input type="file" id="upFolder" webkitdirectory multiple hidden>
@@ -935,6 +1055,7 @@ button{font:inherit;color:inherit;background:none;border:0;cursor:pointer}
         <button aria-pressed="true">在盘上</button><button aria-pressed="false">已安装</button><button aria-pressed="false">需口令</button>
       </div>
       <span class="sp"></span>
+      <button type="button" class="btn sm" id="btnPkgPc"><svg class="i" style="width:14px;height:14px"><use href="#i-lib"/></svg>从 PC 安装</button>
       <span class="count num" id="libCount">6 个 · 1 个已装 · 1 个需口令</span>
     </div>
 
@@ -942,50 +1063,50 @@ button{font:inherit;color:inherit;background:none;border:0;cursor:pointer}
       <article class="gcard" tabindex="0">
         <div class="cover a1"><span class="plat">PS5</span><span class="mark">CO</span></div>
         <div class="gbody">
-          <b class="gtitle">Contra: Operation Galuga</b>
+          <div class="gtitleline"><b class="gtitle">Contra: Operation Galuga</b><span class="pill n">待安装</span></div>
           <div class="gmeta"><span>PPSA15368 · v01.000.003</span><span>8.5 GB · M.2 /mnt/ext1</span></div>
-          <div class="gacts"><span class="pill n">待安装</span><button class="btn sm pri">安装</button></div>
+          <div class="gacts"><button class="btn sm pri">安装</button></div>
         </div>
       </article>
       <article class="gcard" tabindex="0">
         <div class="cover a2"><span class="plat">PS5</span><span class="mark">T8</span></div>
         <div class="gbody">
-          <b class="gtitle">TEKKEN 8</b>
+          <div class="gtitleline"><b class="gtitle">TEKKEN 8</b><span class="pill g">已安装</span></div>
           <div class="gmeta"><span>PPSA10595 · v01.009.001</span><span>100.7 MB · 已装 /user/app</span></div>
-          <div class="gacts"><span class="pill g">已安装</span><button class="btn sm">打开</button></div>
+          <div class="gacts"><button class="btn sm">打开</button></div>
         </div>
       </article>
       <article class="gcard" tabindex="0">
         <div class="cover a4"><span class="plat">PS5</span><span class="mark">AB</span></div>
         <div class="gbody">
-          <b class="gtitle">Astro Bot</b>
+          <div class="gtitleline"><b class="gtitle">Astro Bot</b><span class="pill n">待安装</span></div>
           <div class="gmeta"><span>PPSA21567 · v01.018.000</span><span>36 GB · 解密文件夹</span></div>
-          <div class="gacts"><span class="pill n">待安装</span><button class="btn sm pri">安装</button></div>
+          <div class="gacts"><button class="btn sm pri">安装</button></div>
         </div>
       </article>
       <article class="gcard" tabindex="0">
         <div class="cover a3"><span class="plat">PS5</span><span class="mark">AP</span></div>
         <div class="gbody">
-          <b class="gtitle">Astro's Playroom</b>
+          <div class="gtitleline"><b class="gtitle">Astro's Playroom</b><span class="pill b">已挂载</span></div>
           <div class="gmeta"><span>PPSA01325 · v01.904.000</span><span>10.8 GB · FFPKG 已挂载</span></div>
-          <div class="gacts"><span class="pill b">已挂载</span><button class="btn sm">卸载</button></div>
+          <div class="gacts"><button class="btn sm">卸载</button></div>
         </div>
       </article>
       <article class="gcard" tabindex="0">
         <div class="cover a6 locked"><span class="plat">PS5</span>
           <svg class="i lock"><use href="#i-lock"/></svg><span class="mark">SB</span></div>
         <div class="gbody">
-          <b class="gtitle">Stellar Blade</b>
+          <div class="gtitleline"><b class="gtitle">Stellar Blade</b><span class="pill r">需口令</span></div>
           <div class="gmeta"><span>PPSA13398 · v01.000.000</span><span>12.8 GB · 7z 加密</span></div>
-          <div class="gacts"><span class="pill r">需口令</span><button class="btn sm">输入口令</button></div>
+          <div class="gacts"><button class="btn sm">输入口令</button></div>
         </div>
       </article>
       <article class="gcard" tabindex="0">
-        <div class="cover fb"><span class="plat">PS4</span><span class="mark">CUSA04874</span><span class="cap">无 icon0.png</span></div>
+        <div class="cover a3"><span class="plat">PS4</span><span class="mark">C04874</span></div>
         <div class="gbody">
-          <b class="gtitle">CUSA04874</b>
+          <div class="gtitleline"><b class="gtitle">CUSA04874</b><span class="pill n">待安装</span></div>
           <div class="gmeta"><span>v01.00</span><span>26.4 GB · 文件夹</span></div>
-          <div class="gacts"><span class="pill n">待安装</span><button class="btn sm pri">安装</button></div>
+          <div class="gacts"><button class="btn sm pri">安装</button></div>
         </div>
       </article>
     </div>
@@ -1015,13 +1136,12 @@ button{font:inherit;color:inherit;background:none;border:0;cursor:pointer}
   </section>
   </section><!-- /view-saves -->
 
+  <footer class="wrap foot">
+    <span>PS5 Nexus</span>
+    <span class="sp"></span>
+    <span>拖拽文件到页面即可上传</span>
+  </footer>
 </main>
-
-<footer class="wrap foot">
-  <span>PS5 Nexus</span>
-  <span class="sp"></span>
-  <span>拖拽文件到页面即可上传</span>
-</footer>
 
 <div class="scrim" id="scrimExtract">
   <div class="dlg" role="dialog" aria-modal="true" aria-labelledby="dt">
@@ -1047,16 +1167,9 @@ button{font:inherit;color:inherit;background:none;border:0;cursor:pointer}
       <div class="fld"><label for="dlgPw">口令　·　加密归档才需要</label>
         <input type="password" id="dlgPw" placeholder="无口令归档留空" autocomplete="off">
       </div>
-      <div class="fld"><div class="cbrow">
-        <input type="checkbox" id="dlgLarge">
-        <label for="dlgLarge"><span class="t">大文件模式</span>
-          <span class="d">超大单文件（&gt;4 GB）稀疏落盘，普通归档不勾。</span></label>
-      </div></div>
-      <div class="fld"><div class="cbrow">
-        <input type="checkbox" id="cb5">
-        <label for="cb5"><span class="t">以压缩包名新建子目录</span>
-          <span class="d">解到压缩包名子目录，避免文件散落；默认不勾。</span></label>
-      </div></div>
+      <!-- 2026-10-02 —— 「大文件模式」「以压缩包名新建子目录」两个复选框已删（用户：没用）。
+           子目录行为固定为服务端默认（落点下建压缩包同名子目录，游戏不散落）；
+           大文件模式原本就没有后端参数支撑，纯属摆设。 -->
       <div class="space"><span>落点 <b id="dlgDst">/data</b></span></div>
     </div>
     <div class="dlg-f"><button class="btn" id="dc2">取消</button><button class="btn pri" id="dgo">解压到此处</button></div>
@@ -1156,6 +1269,24 @@ button{font:inherit;color:inherit;background:none;border:0;cursor:pointer}
   </div>
 </div>
 
+<div class="scrim" id="scrimPkgPc">
+  <div class="dlg" role="dialog" aria-modal="true" aria-labelledby="ppt" style="max-width:900px">
+    <div class="dlg-h"><h2 id="ppt">从 PC 安装</h2><span class="sp"></span>
+      <button class="btn icon sm" id="ppc" aria-label="关闭"><svg class="i"><use href="#i-x"/></svg></button></div>
+    <div class="dlg-b">
+      <div class="fld"><label for="ppAddr">PC 地址　·　PC 上运行 tools/serve-pkg.py 后填 IP:端口</label>
+        <div style="display:flex;gap:10px">
+          <input type="text" id="ppAddr" placeholder="192.168.1.10:9898" autocomplete="off" style="flex:1">
+          <button type="button" class="btn pri" id="ppGo">连接</button>
+        </div>
+      </div>
+      <div class="note" id="ppStatus" style="color:var(--fg3);margin:4px 0 12px">输入 PC 地址后点「连接」。</div>
+      <div class="covers" id="ppGrid" style="margin-top:6px"></div>
+    </div>
+    <div class="dlg-f"><button class="btn" id="ppc2">关闭</button></div>
+  </div>
+</div>
+
 <div class="scrim" id="scrimView">
   <div class="dlg" role="dialog" aria-modal="true" aria-labelledby="vt">
     <div class="dlg-h"><h2 id="vt">预览</h2><span class="sp"></span>
@@ -1227,7 +1358,9 @@ function goto(key) {
   if (!VIEWS.includes(key)) key = "files";
   document.querySelectorAll(".view").forEach(v => v.classList.toggle("on", v.id === "view-" + key));
   document.querySelectorAll("#nav button").forEach(b => b.setAttribute("aria-current", String(b.dataset.view === key)));
-  window.scrollTo(0, 0);
+  /* 滚动容器是 main —— 切视图回顶要滚它，window.scrollTo 已经滚不到任何东西 */
+  const sc = document.querySelector("main");
+  if (sc) sc.scrollTop = 0; else window.scrollTo(0, 0);
 }
 document.getElementById("nav").addEventListener("click", e => {
   const b = e.target.closest("button[data-view]");
@@ -1356,7 +1489,7 @@ function applyFilter(scope) {
     let n = 0;
     scope.querySelectorAll(".gcard").forEach(c => {
       const p = txt(c.querySelector(".cover .plat"));
-      const s = txt(c.querySelector(".gacts .pill"));
+      const s = txt(c.querySelector(".gtitleline .pill"));   // 状态徽章已上移到标题行
       const gtitle = txt(c.querySelector(".gtitle"));
       const gmeta = txt(c.querySelector(".gmeta"));
       const tid = c.dataset.tid || (gmeta.split("·")[0] || "").trim();   // 动态卡读 data-*，静态卡从文案回退
@@ -1914,21 +2047,20 @@ const fsView = fsNav({
   dataSel: "#fsTbody tr",
   upRow: () => '<tr data-up="1"><td class="csel"></td>'
     + '<td class="cname"><span class="nm">.. 返回上一级</span></td>'
-    + '<td></td><td class="csize"></td><td class="ctime"></td><td class="cmode"></td></tr>',
+    + '<td class="csize"></td><td class="ctime"></td><td class="cmode"></td></tr>',
   rowOf: (e) => {
     const full = fsFullPath(e.name);
     const sel = FS_SELECTED.has(full);
     return '<tr data-' + (e.is_dir ? "dir" : "path") + '="' + esc(full) + '"' + (sel ? ' class="sel"' : "") + '>'
       + '<td class="csel"><label class="selhit"><input type="checkbox" data-fsck="1" ' + (sel ? "checked" : "") + '></label></td>'
       + '<td class="cname"><span class="nm"><svg class="i" style="width:18px;height:18px"><use href="#' + fsTypeIcon(e) + '" xlink:href="#' + fsTypeIcon(e) + '"/></svg>' + esc(decodeFsText(e.name)) + '</span></td>'
-      + '<td class="ctype">' + fsTypePill(e) + '</td>'
       + '<td class="csize">' + (e.is_dir ? "—" : fmt(e.size)) + '</td>'
       + '<td class="ctime">' + fsMtimeStr(e) + '</td>'
       + '<td class="cmode">' + fsModeStr(e) + '</td>'
       + '</tr>';
   },
-  emptyRow: () => '<tr><td colspan="6"><div class="fmempty" style="padding:30px">空目录</div></td></tr>',
-  errRow: msg => '<tr><td colspan="6"><div class="fmempty" style="color:var(--bad)">' + esc(msg) + '</div></td></tr>',
+  emptyRow: () => '<tr><td colspan="5"><div class="fmempty" style="padding:30px">空目录</div></td></tr>',
+  errRow: msg => '<tr><td colspan="5"><div class="fmempty" style="color:var(--bad)">' + esc(msg) + '</div></td></tr>',
   onOk: (st, entries) => {
     renderFsCrumbs(document.getElementById("fsPath"), st);
     FS_ENTRIES = entries || [];
@@ -2002,7 +2134,8 @@ document.getElementById("btnPaste").addEventListener("click", async () => {
    ⚠️ 原先是在请求里递归删完才返回 —— 一个游戏目录上万个条目，MHD 线程会被占住几分钟，
    浏览器早就放弃了，用户既看不到进度也看不到结果。现在服务端只做「count 总条目 + 入队」，
    真正的删除由 worker 每 tick 删一片，进度就是工具栏下面那条 jobbar。
-   注意表单文案里说清楚了「后台逐步删除」，否则用户会以为点了没反应。 */
+   确认弹窗只问「删不删」（2026-10-02 用户点名：别预告机制）；确认后立即 openDel() 弹进度，
+   「点了没反应」的担忧由「立刻弹窗」本身化解，不需要文案铺垫。 */
 let delArmed = false;   /* 入队成功即立起；对话框靠它决定何时报结果并刷新列表 */
 /* 删除进度对话框（与上传窗同形态）。放在 .view 之外，理由见 #scrimDel 处的注释。 */
 const scrimDel = document.getElementById("scrimDel");
@@ -2011,7 +2144,7 @@ const closeDel = () => { if (scrimDel) scrimDel.classList.remove("on"); };
 document.getElementById("btnDelete").addEventListener("click", async () => {
   const items = fsSelectedItems();
   if (!items.length) return;
-  if (!confirm(`确定删除 ${items.length} 项？\n${items.map(i => i.name).join("\n")}\n\n条目多的目录会在后台逐步删除，进度会弹窗显示。`)) return;
+  if (!confirm(`确定删除 ${items.length} 项？\n${items.map(i => i.name).join("\n")}`)) return;
   const paths = items.map(i => i.path).join("\n");
   const j = await apiJson("/api/delete", { paths });
   if (j && j.ok) {
@@ -2179,7 +2312,6 @@ function fsViewRow(e) {
   return '<tr data-' + (e.is_dir ? "dir" : "path") + '="' + esc(full) + '"' + (sel ? ' class="sel"' : "") + '>'
     + '<td class="csel"><label class="selhit"><input type="checkbox" data-fsck="1" ' + (sel ? "checked" : "") + '></label></td>'
     + '<td class="cname"><span class="nm"><svg class="i" style="width:18px;height:18px"><use href="#' + fsTypeIcon(e) + '" xlink:href="#' + fsTypeIcon(e) + '"/></svg>' + esc(decodeFsText(e.name)) + '</span></td>'
-    + '<td class="ctype">' + fsTypePill(e) + '</td>'
     + '<td class="csize">' + (e.is_dir ? "—" : fmt(e.size)) + '</td>'
     + '<td class="ctime">' + fsMtimeStr(e) + '</td>'
     + '<td class="cmode">' + fsModeStr(e) + '</td>'
@@ -2281,6 +2413,8 @@ renderNas();
    顶栏不是常量高度 —— 它随 --ui 缩放，也会在窗口窄于 1030px 时折成两行
    （83px → 130px 量级）。写死一个数字，窄屏下工具条就会粘到顶栏底下被盖住
    一半，而这个偏差在 1920 的测试视口里永远看不出来 —— 正是本项目反复踩的那类坑。
+   --fmH 同理：冻结表头（thead th sticky）的 top = 顶栏 + 工具条两段之和，
+   工具条高度随 --ui / 按钮折行变化，也必须实测。二者同源同刷。
    .pinned 只管那条分隔线，不影响定位。 */
 (function stickyFileBar() {
   const top = document.querySelector("header.top");
@@ -2294,12 +2428,17 @@ renderNas();
   const apply = () => {
     const h = Math.round(top.getBoundingClientRect().height);
     if (h > 0) { topH = h; document.documentElement.style.setProperty("--topH", h + "px"); }
+    const fh = Math.round(bar.getBoundingClientRect().height);
+    if (fh > 0) document.documentElement.style.setProperty("--fmH", fh + "px");
     pin();
   };
   apply();
-  if (typeof ResizeObserver === "function") new ResizeObserver(apply).observe(top);
+  if (typeof ResizeObserver === "function") { new ResizeObserver(apply).observe(top); new ResizeObserver(apply).observe(bar); }
   window.addEventListener("resize", apply);
-  window.addEventListener("scroll", pin, { passive: true });
+  /* 滚动容器是 main（2026-10-02 起页面级滚动废除）—— scroll 事件不冒泡，必须挂在容器上 */
+  const sc = document.querySelector("main");
+  if (sc) sc.addEventListener("scroll", pin, { passive: true });
+  window.addEventListener("scroll", pin, { passive: true });   /* 兼容：万一容器选择器落空 */
 })();
 
 const __rbar = document.getElementById("fsRoots");
@@ -2384,14 +2523,16 @@ document.getElementById("dlgCrumbs").addEventListener("click", e => {
 });
 
 let currentArchive = null;
-/* 打开解压对话框：设置标题 + 落点路径 + 刷新目录树 */
+/* 打开解压对话框：标题 + 落点直接定位到压缩包所在目录（用户要求「点解压
+   应该直接显示解压文件所在的目录路径」，而不是每次都从固定根开始翻） */
 function openExtract(path, name) {
   currentArchive = { path, name };
   const dt = document.getElementById("dt");
   if (dt) dt.textContent = "解压 " + name;
   const sc = document.getElementById("scrimExtract");
   if (sc) sc.classList.add("on");
-  dlgFs.refresh();
+  const parent = String(path || "").replace(/\/[^/]*$/, "") || "/";
+  dlgFs.go(parent);
 }
 const dlgClose = () => document.getElementById("scrimExtract")?.classList.remove("on");
 document.getElementById("dc2")?.addEventListener("click", dlgClose);
@@ -2401,19 +2542,16 @@ window.submitExtract = async function () {
   if (!LIVE) { dlgClose(); return; }              // 静态演示：保持原型「点了就关」
   if (!currentArchive) { dlgClose(); return; }
   const pw = document.getElementById("dlgPw") ? document.getElementById("dlgPw").value : "";
-  const big = document.getElementById("dlgLarge") ? document.getElementById("dlgLarge").checked : false;
-  /* ⚠️ 2026-10-01 —— 服务端按 subdir 决定「以压缩包名新建子目录」。此前这个复选框
-     （#cb5）在 HTML 里存在、看着能用，但**没有任何代码读它**：勾了也不生效，归档永远
-     摊平进落点目录，游戏就散成一堆文件、挂不起来。现在显式透传。 */
-  const subdir = document.getElementById("cb5") ? document.getElementById("cb5").checked : false;
+  /* 2026-10-02 —— 不再传 subdir/large。服务端默认在落点下建压缩包同名
+     子目录（游戏解压不散落，见 api_extract 注释）；大文件模式无后端支撑，
+     连同它的复选框一起删了。 */
   const dst = dlgFs.state.path;                // 落点 = 对话框当前浏览路径
   const btn = document.getElementById("dgo");
   if (btn) btn.disabled = true;
   const j = await apiPost("/api/extract", {
     path: currentArchive.path, dst_dir: dst,
-    subdir: subdir ? "1" : "0",
     conflict: "fail",
-    password: pw, large: big ? "1" : "",
+    password: pw,
   });
   if (btn) btn.disabled = false;
   if (j && j.ok) {
@@ -2461,8 +2599,14 @@ function toast(msg) {
 /* ---- /api/pkg/scan → 封面网格 ---- */
 const tidMark = tid => String(tid || "").replace(/^(PPSA|CUSA)/, m => m[0]);   // PPSA15368 → P15368
 const tidPlat = tid => /^CUSA/i.test(String(tid || "")) ? "PS4" : "PS5";
-const coverSeq = ["a1", "a2", "a4", "a3", "a6"];   // 渐变替身循环（icon0 抽取未上线的回退视觉）
+const coverSeq = ["a1", "a2", "a4", "a3", "a6"];   // 渐变替身循环（提取不到 icon0 时的兜底视觉）
 const coverOf = tid => { let h = 0; for (const c of String(tid || "x")) h += c.charCodeAt(0); return coverSeq[h % coverSeq.length]; };
+/* 真封面：后端 /api/pkg/icon 直接从 PKG 容器里抽 icon0.png（未加密条目），
+   404 = 容器里没有/不是本地文件 ⇒ onerror 自删，露出下面的渐变 ID 兜底。
+   只有真实 .pkg 文件路径才值得试；目录型条目没有容器，直接不给 img。 */
+const coverImg = p => (p && p.path && /\.pkg$/i.test(p.path)
+  ? '<img class="cimg" alt="" loading="lazy" src="/api/pkg/icon?path=' + encodeURIComponent(p.path) + '" onerror="this.remove()">'
+  : "");
 
 function libCard(p) {
   const tid = p.title_id || "";
@@ -2477,11 +2621,11 @@ function libCard(p) {
   return '<article class="gcard" tabindex="0" data-tid="' + esc(tid) + '" data-title="' + esc(p.title || "")
     + '" data-version="' + esc(ver) + '" data-size="' + esc(String(p.size || 0))
     + '" data-fpkg="' + (fpkg ? "1" : "") + '" data-path="' + esc(p.path || "") + '">'
-    + '<div class="cover ' + coverOf(tid) + '"><span class="plat">' + esc(plat) + '</span><span class="mark">' + esc(mark) + "</span></div>"
-    + '<div class="gbody"><b class="gtitle">' + esc(p.title || tid || "未知标题") + "</b>"
+    + '<div class="cover ' + coverOf(tid) + '"><span class="plat">' + esc(plat) + '</span><span class="mark">' + esc(mark) + "</span>" + coverImg(p) + "</div>"
+    + '<div class="gbody"><div class="gtitleline"><b class="gtitle">' + esc(p.title || tid || "未知标题") + '</b><span class="pill n">' + esc(pill) + "</span></div>"
     + '<div class="gmeta"><span>' + esc(meta1) + "</span>"
     + "<span>" + (p.size ? fmt(p.size) : "大小未知") + " · 待安装</span></div>"
-    + '<div class="gacts"><span class="pill n">' + esc(pill) + '</span><button class="btn sm pri">安装</button></div>'
+    + '<div class="gacts"><button class="btn sm pri">安装</button></div>'
     + "</div></article>";
 }
 
@@ -2742,6 +2886,119 @@ if (libCovers) libCovers.addEventListener("click", async e => {
   }
 });
 
+/* ---- 从 PC 安装：tools/serve-pkg.py 的 /catalog → 卡片 → /api/pkg/install-url
+   PC 端脚本只做「带 Range 的文件服务 + 列表」；下载由 PS5 系统安装器自己发起
+  （sceAppInstUtilInstallByPackage 接受 http:// uri），PKG 不落 PS5 硬盘。
+   catalog 是跨域 GET（serve-pkg.py 已发 CORS 头）；连不上时给可操作提示。 ---- */
+const scrimPkgPc = document.getElementById("scrimPkgPc");
+const ppAddr = document.getElementById("ppAddr");
+const ppStatus = document.getElementById("ppStatus");
+const ppGrid = document.getElementById("ppGrid");
+const PP_ADDR_KEY = "nexus.pcAddr";
+let ppConnected = "";                      /* 已连通的 "ip:port" */
+
+function closePkgPc() { if (scrimPkgPc) scrimPkgPc.classList.remove("on"); }
+
+function pcCard(it) {
+  const fpkg = !!it.is_fpkg;
+  const label = it.name || it.id || "未命名";
+  const url = "http://" + ppConnected + (it.url || ("/pkg/" + encodeURIComponent(it.id || "")));
+  return '<article class="gcard" tabindex="0" data-name="' + esc(label)
+    + '" data-size="' + esc(String(it.size || 0)) + '" data-fpkg="' + (fpkg ? "1" : "")
+    + '" data-url="' + esc(url) + '">'
+    + '<div class="cover ' + coverOf(label) + '"><span class="plat">' + (fpkg ? "fPKG" : "PKG")
+    + '</span><span class="mark">' + (fpkg ? "IMG" : "PC") + "</span></div>"
+    + '<div class="gbody"><div class="gtitleline"><b class="gtitle">' + esc(label) + '</b><span class="pill n">待安装</span></div>'
+    + '<div class="gmeta"><span>' + (fpkg ? "fPKG 镜像" : "PKG 安装包") + "</span>"
+    + "<span>" + (it.size ? fmt(it.size) : "大小未知") + " · PC 直装</span></div>"
+    + '<div class="gacts"><button class="btn sm pri">安装</button></div>'
+    + "</div></article>";
+}
+
+function pcInfoRows(card) {
+  const row = (k, v) => '<div class="pkginfo-row"><span class="k">' + esc(k)
+    + '</span><span class="v">' + esc(v) + "</span></div>";
+  const fpkg = card.dataset.fpkg === "1";
+  return '<div class="pkginfo-grid">'
+    + row("类型", fpkg ? "fPKG 镜像" : "PKG 安装包")
+    + row("大小", fmt(Number(card.dataset.size) || 0))
+    + row("来源", card.dataset.url)
+    + row("方式", "系统安装器直接从 PC 下载，不占用 PS5 硬盘")
+    + "</div>";
+}
+
+async function ppConnect() {
+  const addr = (ppAddr.value || "").trim().replace(/^https?:\/\//i, "").replace(/\/+$/, "");
+  if (!addr) { ppStatus.textContent = "先填 PC 地址，例如 192.168.1.10:9898"; return; }
+  ppConnected = "";
+  ppStatus.textContent = "连接 " + addr + " …";
+  ppGrid.innerHTML = "";
+  let j = null;
+  try {
+    const r = await fetch("http://" + addr + "/catalog", { cache: "no-store" });
+    j = await r.json();
+  } catch (err) { j = null; }
+  if (!j || !j.ok || !Array.isArray(j.items)) {
+    ppStatus.textContent = "连接失败：确认 PC 上已运行 python serve-pkg.py（端口一致、防火墙放行、PC 与 PS5 同一网段）";
+    return;
+  }
+  ppConnected = addr;
+  try { localStorage.setItem(PP_ADDR_KEY, addr); } catch (e) { /* 隐私模式忽略 */ }
+  ppStatus.textContent = "已连接 " + addr + "，共 " + j.items.length + " 个安装包";
+  ppGrid.innerHTML = j.items.map(pcCard).join("");
+}
+
+async function ppInstall(btn) {
+  const card = btn.closest(".gcard");
+  if (!card || !LIVE || btn.disabled) return;
+  btn.disabled = true;
+  const j = await apiPost("/api/pkg/install-url", { url: card.dataset.url });
+  if (j && j.ok) {
+    closePkgPc();
+    pollInstall(Number(j.task_id) || 0, card.dataset.name, card.dataset.fpkg === "1");
+    refreshAll();
+  } else {
+    btn.disabled = false;
+    toast("入队失败：" + (j && j.error ? j.error : "服务不可用"));
+  }
+}
+
+document.getElementById("btnPkgPc")?.addEventListener("click", () => {
+  if (!LIVE) { toast("真机下可从 PC 直装 PKG"); return; }
+  try { ppAddr.value = localStorage.getItem(PP_ADDR_KEY) || ""; } catch (e) { /* ignore */ }
+  scrimPkgPc.classList.add("on");
+  if (ppAddr.value) ppConnect();          // 有记忆地址直接连
+});
+document.getElementById("ppGo").addEventListener("click", ppConnect);
+ppAddr.addEventListener("keydown", e => { if (e.key === "Enter") ppConnect(); });
+document.getElementById("ppc").addEventListener("click", closePkgPc);
+document.getElementById("ppc2").addEventListener("click", closePkgPc);
+scrimPkgPc.addEventListener("click", e => { if (e.target === scrimPkgPc) closePkgPc(); });
+document.addEventListener("keydown", e => {
+  if (e.key === "Escape" && scrimPkgPc.classList.contains("on")) closePkgPc();
+});
+if (ppGrid) ppGrid.addEventListener("click", e => {
+  const btn = e.target.closest(".gacts .btn");
+  if (btn) { ppInstall(btn); return; }
+  const card = e.target.closest(".gcard");
+  if (card && ppConnected) {
+    /* 卡片信息复用 PKG 详情弹窗（远程包读不到 SFO，显示来源与方式） */
+    closePkgPc();
+    pkgInfoCurrent = null;
+    pkgInfoTab = "spec";
+    if (pkgInfoTabs) pkgInfoTabs.querySelectorAll("button").forEach(
+      x => x.setAttribute("aria-pressed", String(x.dataset.tab === "spec")));
+    pkgInfoTitle.textContent = card.dataset.name;
+    pkgInfoSub.innerHTML = (card.dataset.fpkg === "1" ? "fPKG 镜像" : "PKG 安装包")
+      + ' · <span class="num">' + esc(fmt(Number(card.dataset.size) || 0)) + "</span>";
+    pkgInfoCover.hidden = true;
+    pkgInfoFallback.hidden = false;
+    pkgInfoFallback.textContent = "PC";
+    pkgInfoPane.innerHTML = pcInfoRows(card);
+    scrimPkgInfo.classList.add("on");
+  }
+});
+
 /* ---- 从 NAS 拉取：最小对话框 → /api/fetch ---- */
 const scrimFetch = document.getElementById("scrimFetch");
 const openFetch = () => scrimFetch.classList.add("on");
@@ -2792,31 +3049,49 @@ const closeUp = () => { if (scrimUp) scrimUp.classList.remove("on"); };
 let upXhr = null;      /* 当前上传 XHR（取消按钮用） */
 let upQueue = [];      /* 多文件串行队列 */
 let upBusy = false;
+/* 批次级聚合进度（用户：多个文件共用一条总进度条，别每个文件从 0 重来）。
+   done = 已完结文件的字节合计；total = 本批全部字节；
+   t0 = 批次起点（速度/剩余按整批算，不是按单个文件）。 */
+let upAgg = { done: 0, total: 0, count: 0, finished: 0, failed: 0, t0: 0 };
+
+function upAggReset() { upAgg = { done: 0, total: 0, count: 0, finished: 0, failed: 0, t0: 0 }; }
 
 function uploadOne(file, done) {
   if (fsView.state.scheme !== "local") { toast("上传目标需为本地目录（内部 /data 或 M.2）"); return done && done(); }
   const dst = fsView.state.path;
-  upName.textContent = file.name;
-  upBar.style.width = "0%";
-  upPct.textContent = "0%";
-  upRate.textContent = "—";
-  upElapsed.textContent = "0:00";
-  upEta.textContent = "—";
+  /* 批内序号：队列里排在前面的都已开传，count - 剩余 = 第几个 */
+  const idx = upAgg.count - upQueue.length;
+  upName.textContent = file.name + "（" + idx + "/" + upAgg.count + "）";
   upErr.textContent = "";
-  const t0 = performance.now();
+  if (idx === 1) {           // 新批次：进度条/时间从 0 起算（上一批可能停在 100%）
+    upBar.style.width = "0%";
+    upPct.textContent = "0%";
+    upRate.textContent = "—";
+    upElapsed.textContent = "0:00";
+    upEta.textContent = "—";
+  }
+  /* t0 挂在批次上：第二个文件开始时不要重置计时，速度/剩余才是整批口径 */
+  const t0 = upAgg.t0 || (upAgg.t0 = performance.now());
   let upLoaded = 0;
   /* PS5 WebKit 的 onprogress 事件稀疏（可能最后才触发一次），用 1s 定时器兜底
-     刷新已用/剩余/速度 —— onprogress 触发时同样走这个渲染函数。 */
-  const renderUpTime = (dt) => {
+     刷新已用/剩余/速度 —— onprogress 触发时同样走这个渲染函数。
+     速度/剩余按聚合字节算：批量传 3 个文件时进度不会在前 2 个文件上狂飙。 */
+  const renderUpTime = (dt, aggBytes) => {
     upElapsed.textContent = fmtDur(dt);
-    if (dt > 800 && upLoaded > 0) {
-      const rate = upLoaded / (dt / 1000);
+    const agg = aggBytes !== undefined ? aggBytes : (upAgg.done + upLoaded);
+    if (dt > 800 && agg > 0) {
+      const rate = agg / (dt / 1000);
       upRate.textContent = fmtRate(rate);
-      upEta.textContent = rate > 0 ? fmtDur((file.size - upLoaded) / rate * 1000) : "—";
+      upEta.textContent = rate > 0 ? fmtDur(Math.max(0, upAgg.total - agg) / rate * 1000) : "—";
     }
   };
   const upTimer = setInterval(() => renderUpTime(performance.now() - t0), 1000);
   const stopTimer = () => { clearInterval(upTimer); };
+  /* 每个文件终态时记一次账（成功记全量；失败/中止只记实际传到的字节） */
+  const finishFile = (full) => {
+    stopTimer();
+    upAgg.done += full ? (file.size || upLoaded) : upLoaded;
+  };
   const xhr = new XMLHttpRequest();
   upXhr = xhr;
   xhr.open("POST", "/api/upload-file");
@@ -2833,29 +3108,30 @@ function uploadOne(file, done) {
   xhr.upload.onprogress = e => {
     if (!e.lengthComputable) return;
     upLoaded = e.loaded;
-    const pct = Math.round(e.loaded / e.total * 100);
+    const agg = upAgg.done + upLoaded;
+    const pct = upAgg.total > 0 ? Math.min(100, Math.round(agg / upAgg.total * 100)) : 0;
     upBar.style.width = pct + "%";
     upPct.textContent = pct + "%";
-    renderUpTime(performance.now() - t0);
+    renderUpTime(performance.now() - t0, agg);
   };
   xhr.onload = () => {
     upXhr = null;
-    stopTimer();
     let j = null;
     try { j = JSON.parse(xhr.responseText); } catch (e) { /* 非 JSON 响应 */ }
     if (xhr.status === 200 && j && j.ok) {
-      closeUp();
+      upAgg.finished++;
+      finishFile(true);
       toast("上传完成：" + file.name);
-      refreshAll();
       done && done();
     } else {
+      upAgg.failed++;
+      finishFile(false);
       upErr.textContent = "上传失败：" + ((j && j.error) || ("HTTP " + xhr.status));
       done && done();  /* 弹窗保留错误信息，点「取消」关闭；队列继续下一个 */
     }
   };
   xhr.onerror = () => {
     upXhr = null;
-    stopTimer();
     /* PS5 WebKit 有时在传输已完成、文件已落盘后才报网络错误 ⇒ 先问任务中心：
        同名上传任务已 done 就按成功处理；否则把服务端记下的原因原样显示。
        ⚠️ 只印「网络错误」是零信息量 —— 分不清断在第 0 字节（连接根本没建起来）
@@ -2865,19 +3141,26 @@ function uploadOne(file, done) {
       const mine = tasks.filter(t => t.kind === 2 && t.label === file.name);
       const hit = mine.find(t => t.state_name === "done");
       if (hit) {
-        closeUp();
+        upAgg.finished++;
+        finishFile(true);
         toast("上传完成：" + file.name);
-        refreshAll();
       } else {
+        upAgg.failed++;
+        finishFile(false);
         const last = mine[mine.length - 1];
         upErr.textContent = "上传中断（" + ((last && last.note) || "连接被中断") + "）";
       }
       done && done();
-    }).catch(() => { upErr.textContent = "上传中断（网络错误）"; done && done(); });
+    }).catch(() => {
+      upAgg.failed++;
+      finishFile(false);
+      upErr.textContent = "上传中断（网络错误）";
+      done && done();
+    });
   };
   xhr.onabort = () => {
     upXhr = null;
-    stopTimer();
+    finishFile(false);
     closeUp();
     toast("已取消上传：" + file.name);
     done && done();
@@ -2891,11 +3174,27 @@ function resetUpInputs() {
   if (upFile) upFile.value = "";
   if (upFolder) upFolder.value = "";
 }
-/* 串行队列：选择/拖拽多个文件时逐个上传 */
+/* 串行队列：选择/拖拽多个文件时逐个上传。
+   批次终点的三件事只能在这里做（用户反馈驱动的两处修正）：
+   ① closeUp 从「每个文件成功就关」挪到「整批排空才关」——多文件批次
+      窗口不再闪开闪关、总进度条得以贯穿到底；
+   ② 列表刷新改调 fsView.refresh() —— 原来 refreshAll() 只刷状态和任务
+      页，根本不碰文件表，这就是「上传完列表不出现新文件、要手动刷新」；
+   ③ upAgg 归零，下一批从 0% 开始（不是接在上一批的 100% 后面）。 */
 function pumpUp() {
   if (upBusy) return;
   const f = upQueue.shift();
-  if (!f) { resetUpInputs(); return; }
+  if (!f) {
+    resetUpInputs();
+    const hadBatch = upAgg.count > 0 && (upAgg.finished + upAgg.failed) > 0;
+    if (hadBatch) {
+      closeUp();
+      fsView.refresh();
+      if (upAgg.failed) toast("上传完成：" + upAgg.finished + " 成功 / " + upAgg.failed + " 失败");
+    }
+    upAggReset();
+    return;
+  }
   upBusy = true;
   openUp();
   uploadOne(f, () => { upBusy = false; pumpUp(); });
@@ -2905,6 +3204,9 @@ function enqueueUploads(files) {
   if (!list.length) return;
   if (fsView.state.scheme !== "local") { toast("上传目标需为本地目录（内部 /data 或 M.2）"); return; }
   upQueue.push(...list);
+  upAgg.total += list.reduce((s, f) => s + (f.size || 0), 0);
+  upAgg.count += list.length;
+  if (!upBusy) upAgg.t0 = 0;      // 新批次：从第一个文件开传时起算
   pumpUp();
 }
 
