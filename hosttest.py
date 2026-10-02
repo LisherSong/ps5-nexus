@@ -53,7 +53,7 @@ def _host_bin():
 # re-broken binary (see .build/nas-counterfactual-wsl.sh) without touching the
 # tree. Default is the normal build.
 BIN = os.environ.get("WFM_BIN") or _host_bin()
-ROOT = "/tmp/wfm-merged-hosttest"
+ROOT = "/tmp/ps5-nexus-hosttest"
 # SMB fixture port. Must stay OUT of the Windows reserved ranges
 # (`netsh interface ipv4 show excludedportrange protocol=tcp` lists 1390-1489);
 # see .build/nas-fixture.sh.

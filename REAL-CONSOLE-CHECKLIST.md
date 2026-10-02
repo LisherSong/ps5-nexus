@@ -104,12 +104,12 @@ wsl.exe -d Ubuntu-22.04 bash < .build/hosttest-wsl.sh       # 只跑测试，连
 node .build/preview_check.mjs                                # 前端 57 项
 
 # WSL 内手动
-cd "/mnt/c/Users/songl/Desktop/Web File Manager/ps5-wfm-merged"
+cd "/mnt/c/Users/songl/Desktop/Web File Manager/ps5-nexus"
 make linux && python3 hosttest.py
 make all                                                     # 需要 PS5_PAYLOAD_SDK
 ```
 
-⚠️ **测试沙箱 `/tmp/wfm-merged-hosttest` 必须在原生 Linux 文件系统上**（不能在 `/mnt/c`）：
+⚠️ **测试沙箱 `/tmp/ps5-nexus-hosttest` 必须在原生 Linux 文件系统上**（不能在 `/mnt/c`）：
 drvfs 不实施 mode 位，套件里故意 `chmod 0555` 的只读夹具会**静默失效**。
 若哪次是在 root 下跑的，残留目录普通用户删不掉，用
 `wsl.exe -u root -d Ubuntu-22.04 bash < .build/clean-sandbox-root-wsl.sh`。
