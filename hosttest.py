@@ -415,11 +415,6 @@ def main():
         # ---- 14b. extract honours the front-end's dst_dir / subdir names ----
         # The dialog posts `dst_dir` (the 解压到 picker) + `subdir` (以压缩包名新建
         # 子目录), while this back-end used to read only `destination` / `separate`.
-        # Consequence: the folder the user picked was DISCARDED and archives were
-        # unpacked into their own parent directory with no subfolder — a game then
-        # landed as loose files instead of one mountable PPSA#####-app directory,
-        # which is the "解压完的游戏不能玩" report.
-        #
         # Probe: pointing dst_dir at a FILE must be rejected as
         # "destination is not a directory" — that verdict can only be reached if
         # the alias was really read.
@@ -434,21 +429,26 @@ def main():
               st == 409 and j and j.get("error_code") == "destination_must_be_directory",
               "st=%s j=%s" % (st, j))
 
+        # In-process engine: a bogus archive is ACCEPTED as a task and the worker
+        # fails it with a format verdict (no more 503 helper-missing).
         st, j = c.api_json("/api/extract", {"path": ROOT + "/arch.rar",
                                             "dst_dir": ROOT + "/sub", "subdir": "1"})
-        # The 7-Zip helper is a separate ELF that is not running on the host, so the
-        # request is accepted and then refused with 503. That still proves dst_dir /
-        # subdir parsed and the destination resolved — a bad dst_dir would have
-        # produced 400 or 409 instead.
-        check("extract accepts dst_dir+subdir (503 = helper missing, not bad params)",
-              st == 503 and j and j.get("error_code") == "archive_helper_not_running",
-              "st=%s j=%s" % (st, j))
+        bogus_id = (j or {}).get("task_id")
+        check("bogus archive accepted as a task (in-process engine)",
+              j and j.get("ok") and bogus_id is not None, "st=%s j=%s" % (st, j))
+        settled = None
+        for _ in range(80):
+            st, pj = c.api_post("/api/install/poll", {"id": str(bogus_id)})
+            if pj and pj.get("ok") and pj.get("state_name") in (
+                    "done", "failed", "cancelled"):
+                settled = pj
+                break
+            time.sleep(0.25)
+        check("bogus archive task fails with a format verdict",
+              settled is not None and settled.get("state_name") == "failed",
+              "settled=%s" % (settled,))
 
         # ---- 14c. multi-part RAR: members collapse to the first volume ----
-        # 用户全选 game.part1.rar+part2+… 或只点 game.r00 时，此前后续卷不在
-        # 后缀表里直接 400 "unsupported archive type"，一个字不提分卷。归一
-        # 之后：后续卷/全集 → 第一卷（校验通过 → 503 helper），缺第一卷 →
-        # 明确的 archive_first_part_missing。
         mp = os.path.join(ROOT, "mpgame.part1.rar")
         with open(mp, "wb") as f:
             f.write(b"rar-part1")
@@ -456,16 +456,9 @@ def main():
             f.write(b"rar-part2")
         st, j = c.api_json("/api/extract", {"path": ROOT + "/mpgame.part2.rar",
                                             "dst_dir": ROOT + "/sub"})
-        check("extract .part2.rar alone -> collapses to part1 (503, not 400)",
-              st == 503 and j and j.get("error_code") == "archive_helper_not_running",
-              "st=%s j=%s" % (st, j))
-        st, j = c.api_json("/api/extract",
-                           {"path": ROOT + "/mpgame.part1.rar\n"
-                            + ROOT + "/mpgame.part2.rar",
-                            "dst_dir": ROOT + "/sub"})
-        check("extract part1+part2 both selected -> deduped to part1 (503)",
-              st == 503 and j and j.get("error_code") == "archive_helper_not_running",
-              "st=%s j=%s" % (st, j))
+        bogus2 = (j or {}).get("task_id")
+        check("extract .part2.rar alone -> collapses to part1 (task, not 400)",
+              j and j.get("ok") and bogus2 is not None, "st=%s j=%s" % (st, j))
         with open(os.path.join(ROOT, "mpgame.r00"), "wb") as f:
             f.write(b"rar-legacy-volume")
         st, j = c.api_json("/api/extract", {"path": ROOT + "/mpgame.r00",
@@ -473,6 +466,118 @@ def main():
         check("extract legacy .r00 with .rar missing -> first-part error",
               st == 400 and j and j.get("error_code") == "archive_first_part_missing",
               "st=%s j=%s" % (st, j))
+
+        # ---- 14d. REAL in-process extraction: zip / rar / 7z / volumes ----
+        # Fixtures come from ps5-nexus-legacy's engine suite (tests/fixtures/).
+        # These are the "host-tested leaves" the helper design could never
+        # exercise end-to-end: the unpack runs inside THIS linux binary.
+        import shutil
+        fx = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                          "tests", "fixtures")
+
+        def fx_extract(names, dst_name, password=None):
+            """Copy fixture(s) into the sandbox, enqueue, wait for the task."""
+            if isinstance(names, str):
+                names = [names]
+            for n in names:
+                shutil.copyfile(os.path.join(fx, n), os.path.join(ROOT, n))
+            dst = os.path.join(ROOT, dst_name)
+            os.makedirs(dst, exist_ok=True)
+            body = {"path": os.path.join(ROOT, names[0]), "dst_dir": dst,
+                    "conflict": "overwrite", "subdir": "0"}
+            if password:
+                body["password"] = password
+            st, j = c.api_json("/api/extract", body)
+            tid = (j or {}).get("task_id")
+            if tid is None:
+                return st, j, None
+            for _ in range(240):
+                st, pj = c.api_post("/api/install/poll", {"id": str(tid)})
+                if pj and pj.get("ok") and pj.get("state_name") in (
+                        "done", "failed", "cancelled"):
+                    return st, j, pj
+                time.sleep(0.25)
+            return st, j, None
+
+        # ZIP (minizip-ng + zlib): content-asserted
+        st, j, pj = fx_extract("basic.zip", "xz-basic")
+        ok = pj is not None and pj.get("state_name") == "done"
+        root_txt = nested_txt = None
+        if ok:
+            root_txt = open(os.path.join(ROOT, "xz-basic", "root.txt"), "rb").read()
+            nested_txt = open(os.path.join(ROOT, "xz-basic", "dir", "nested.txt"), "rb").read()
+        check("real zip unpack: root.txt content matches",
+              bool(ok and root_txt == b"root content"), "got=%r pj=%s" % (root_txt, pj))
+        check("real zip unpack: nested dirs created",
+              bool(ok and nested_txt == b"nested content"), "got=%r" % (nested_txt,))
+
+        # RAR (unrar7, C++, RARDLL mode)
+        st, j, pj = fx_extract("basic-v6.rar", "xz-rar")
+        ok = pj is not None and pj.get("state_name") == "done"
+        got = open(os.path.join(ROOT, "xz-rar", "root.txt"), "rb").read() if ok else None
+        # fixture's root.txt carries a banner line before the payload text
+        check("real rar unpack (unrar7 in-process)",
+              bool(ok and got is not None and
+                   b"rar v1.9 fixture root content" in got),
+              "got=%r pj=%s" % (got, pj))
+
+        # 7z (LZMA SDK, incl. -maes AesOpt TUs)
+        st, j, pj = fx_extract("lzma.7z", "xz-7z")
+        ok = pj is not None and pj.get("state_name") == "done"
+        got = os.path.isfile(os.path.join(ROOT, "xz-7z", "_src", "readme.txt")) if ok else False
+        check("real 7z unpack (lzma)", bool(ok and got), "pj=%s" % (pj,))
+
+        # Encrypted: without a password -> archive_password_required; with the
+        # right one -> done. Covers PKCRYPT (ZipCrypto) and RAR5 AES-256.
+        st, j, pj = fx_extract("enc-zipcrypto.zip", "xz-enc-zc")
+        check("zipcrypto zip without password -> password_required failure",
+              pj is not None and pj.get("state_name") == "failed"
+              and pj.get("error_code") == "archive_password_required",
+              "pj=%s" % (pj,))
+        st, j, pj = fx_extract("enc-zipcrypto.zip", "xz-enc-zc2", password="secret123")
+        check("zipcrypto zip with password -> done",
+              pj is not None and pj.get("state_name") == "done", "pj=%s" % (pj,))
+        st, j, pj = fx_extract("enc-v6.rar", "xz-enc-rar")
+        check("encrypted rar without password -> password_required failure",
+              pj is not None and pj.get("state_name") == "failed"
+              and pj.get("error_code") == "archive_password_required",
+              "pj=%s" % (pj,))
+        st, j, pj = fx_extract("enc-v6.rar", "xz-enc-rar2", password="secret123")
+        check("encrypted rar with password -> done",
+              pj is not None and pj.get("state_name") == "done", "pj=%s" % (pj,))
+
+        # Volume sets: part1 alone works; selecting ANY later member also works
+        # because the entry layer collapses members to the first volume; a
+        # missing first volume fails loudly instead of hanging.
+        st, j, pj = fx_extract(["vol.part1.rar", "vol.part2.rar", "vol.part3.rar"],
+                               "xz-vol1")
+        check("rar volume set from part1 -> done",
+              pj is not None and pj.get("state_name") == "done", "pj=%s" % (pj,))
+        st, j, pj = fx_extract(["vol.part1.rar", "vol.part2.rar", "vol.part3.rar"],
+                               "xz-vol2")
+        # enqueue from part2 only: same outcome, the collapse already ran
+        body = {"path": os.path.join(ROOT, "vol.part2.rar"),
+                "dst_dir": os.path.join(ROOT, "xz-vol3"),
+                "conflict": "overwrite", "subdir": "0"}
+        os.makedirs(os.path.join(ROOT, "xz-vol3"), exist_ok=True)
+        st, j = c.api_json("/api/extract", body)
+        tid = (j or {}).get("task_id")
+        pj2 = None
+        if tid is not None:
+            for _ in range(240):
+                st, pj2 = c.api_post("/api/install/poll", {"id": str(tid)})
+                if pj2 and pj2.get("ok") and pj2.get("state_name") in (
+                        "done", "failed", "cancelled"):
+                    break
+                time.sleep(0.25)
+        check("rar volume set enqueued from part2 -> still done (collapse)",
+              pj2 is not None and pj2.get("state_name") == "done", "pj2=%s" % (pj2,))
+        st, j, pj = fx_extract("broken.zip.001", "xz-broken")
+        check("incomplete zip volume set -> missing-volume failure",
+              pj is not None and pj.get("state_name") == "failed"
+              and pj.get("error_code") in ("archive_missing_volume",
+                                           "archive_extract_failed"),
+              "pj=%s" % (pj,))
 
         # ---- 15. NEXUS-only stubs must be graceful ----
         st, j = c.api_post("/api/save/list", {"title_id": "CUSA00000"})

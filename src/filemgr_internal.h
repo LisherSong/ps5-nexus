@@ -47,7 +47,6 @@ typedef struct file_task {
   size_t src_count;
   char *password;
   char **extract_destinations;
-  int extract_attached;
   size_t file_count;
   size_t dir_count;
   size_t upload_completed;

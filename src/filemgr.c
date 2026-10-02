@@ -22,7 +22,8 @@
 
 #include "filemgr_internal.h"
 #include "archive_extract.h"
-#include "archive_helper.h"
+#include "extract_engine.h"
+#include "elfldr.h"
 #include "json_util.h"
 #include "path_util.h"
 #include "pkg_info.h"
@@ -1632,72 +1633,81 @@ task_request_error(struct MHD_Connection *conn, file_task_t *task,
 
 typedef struct extract_progress_context {
   file_task_t *task;
-  unsigned long long last_done;
+  unsigned long long base; /* bytes reported by the archives already done */
+  unsigned long long last; /* last absolute value reported to the task */
 } extract_progress_context_t;
 
+/* The engines report bytes written for the CURRENT archive only; the worker
+ * loops over the (first-volume-collapsed) sources and folds them into one
+ * running task total itself. Returning non-zero is the engine's abort
+ * channel, so this doubles as the cancel path -- no separate callback needed. */
 static int
-extract_cancel_requested(void *arg) {
-  return task_cancel_requested(((extract_progress_context_t *)arg)->task);
-}
-
-static void
-extract_progress(void *arg, unsigned long long done,
-                 unsigned long long total) {
+extract_progress(uint64_t written, void *arg) {
   extract_progress_context_t *ctx = arg;
-  unsigned long long add = done >= ctx->last_done ? done - ctx->last_done : done;
+  unsigned long long abs = ctx->base + written;
+  unsigned long long add = abs >= ctx->last ? abs - ctx->last : 0;
 
-  pthread_mutex_lock(&g_tasks_lock);
-  ctx->task->total = total;
-  pthread_mutex_unlock(&g_tasks_lock);
-  ctx->last_done = done;
+  ctx->last = abs;
   task_update(ctx->task, TASK_RUNNING, NULL, add, NULL);
-}
-
-static void
-extract_current_file(void *arg, const char *path) {
-  extract_progress_context_t *ctx = arg;
-  task_update(ctx->task, TASK_RUNNING, path, 0, NULL);
+  return task_cancel_requested(ctx->task);
 }
 
 static void *
 extract_task_worker(file_task_t *task) {
-  archive_helper_callbacks_t callbacks;
-  archive_helper_result_t helper_result;
   extract_progress_context_t context;
+  size_t i;
+  int canceled = 0;
+
   memset(&context, 0, sizeof(context));
   context.task = task;
-  if(task->extract_attached) context.last_done = task->done;
-  memset(&callbacks, 0, sizeof(callbacks));
-  callbacks.cancel_requested = extract_cancel_requested;
-  callbacks.progress = extract_progress;
-  callbacks.current_file = extract_current_file;
-  callbacks.arg = &context;
   task_update(task, TASK_RUNNING, task->srcs[0], 0, NULL);
 
-  if((task->extract_attached ?
-      archive_helper_attach(task->id, &callbacks, &helper_result) :
-      archive_helper_extract(task->id, task->srcs, task->extract_destinations,
-                             task->src_count,
-                             task->password ? task->password : "",
-                             task->extract_overwrite,
-                             &callbacks, &helper_result))) {
-    if(!strcmp(helper_result.code, "canceled") || task_cancel_requested(task)) {
-      task_update(task, TASK_CANCELED,
-                  task->current[0] ? task->current : task->src,
-                  0, "canceled");
-    } else {
-      task_set_error_code(task,
-                          helper_result.code[0] ? helper_result.code :
-                          "archive_extract_failed",
-                          !strcmp(helper_result.code, "archive_password_required") ?
-                          (task->current[0] ? task->current : task->srcs[0]) :
-                          !strcmp(helper_result.code, "archive_missing_volume") ?
-                          helper_result.message : NULL);
-      task_update(task, TASK_FAILED,
-                  task->current[0] ? task->current : task->src, 0,
-                  helper_result.message[0] ? helper_result.message :
-                  "archive extraction failed");
+  for(i = 0; i < task->src_count; i++) {
+    nexus_extract_req_t req;
+    nexus_extract_result_t result;
+    nexus_err_t err;
+
+    memset(&req, 0, sizeof(req));
+    req.conflict = task->extract_overwrite ? NEXUS_CONFLICT_OVERWRITE :
+                                             NEXUS_CONFLICT_FAIL;
+    req.password = task->password ? task->password : NULL;
+    req.progress = extract_progress;
+    req.ctx = &context;
+    context.last = context.base;
+    task_update(task, TASK_RUNNING, task->srcs[i], 0, NULL);
+    memset(&result, 0, sizeof(result));
+    err = nexus_extract(task->srcs[i], task->extract_destinations[i],
+                        &req, &result);
+    if(err == NEXUS_OK) {
+      context.base = context.last;
+      continue;
     }
+    if(err == NEXUS_ERR_CANCELLED || task_cancel_requested(task)) {
+      canceled = 1;
+      break;
+    }
+    if(err == NEXUS_ERR_PASSWORD) {
+      task_set_error_code(task, "archive_password_required", task->srcs[i]);
+    } else if(err == NEXUS_ERR_CONFLICT) {
+      task_set_error_code(task, "archive_conflict", task->extract_destinations[i]);
+    } else {
+      /* Volume-set failures (missing first part etc.) carry the precise
+         reason in the engine message; surface it verbatim. */
+      task_set_error_code(task,
+                          strstr(result.message, "volume") ? "archive_missing_volume" :
+                          "archive_extract_failed",
+                          strstr(result.message, "volume") ? result.message : NULL);
+    }
+    task_update(task, TASK_FAILED,
+                task->current[0] ? task->current : task->srcs[i], 0,
+                result.message[0] ? result.message : "archive extraction failed");
+    return NULL;
+  }
+
+  if(canceled) {
+    task_update(task, TASK_CANCELED,
+                task->current[0] ? task->current : task->src,
+                0, "canceled");
     return NULL;
   }
   {
@@ -1895,51 +1905,9 @@ task_worker(void *arg) {
   return NULL;
 }
 
-void
-filemgr_recover_extract_tasks(void) {
-  archive_helper_snapshot_t *snapshots = NULL;
-  size_t count = 0;
-  size_t i;
-
-  if(archive_helper_list_tasks(&snapshots, &count)) return;
-  for(i = 0; i < count; i++) {
-    archive_helper_snapshot_t *snapshot = &snapshots[i];
-    file_task_t *task = calloc(1, sizeof(*task));
-
-    if(!task) continue;
-    task->op = TASK_EXTRACT;
-    task->state = TASK_QUEUED;
-    task->id = snapshot->job_id;
-    task->srcs = snapshot->sources;
-    task->src_count = snapshot->count;
-    task->extract_destinations = snapshot->destinations;
-    task->extract_attached = 1;
-    task->total = snapshot->total;
-    task->done = snapshot->done;
-    task->upload_completed = snapshot->completed_count;
-    snprintf(task->src, sizeof(task->src), "%s%s", task->srcs[0],
-             task->src_count > 1 ? " ..." : "");
-    snprintf(task->dst, sizeof(task->dst), "%s", task->extract_destinations[0]);
-    snprintf(task->current, sizeof(task->current), "%s", snapshot->current);
-    task->created_at = time(NULL);
-    task->updated_at = task->created_at;
-    snapshot->sources = NULL;
-    snapshot->destinations = NULL;
-    snapshot->count = 0;
-
-    pthread_mutex_lock(&g_tasks_lock);
-    if(task->id >= g_next_task_id) g_next_task_id = task->id + 1;
-    task->next = g_tasks;
-    g_tasks = task;
-    pthread_mutex_unlock(&g_tasks_lock);
-    if(pthread_create(&task->thread, NULL, task_worker, task)) {
-      task_update(task, TASK_FAILED, NULL, 0, "pthread_create failed");
-    } else {
-      pthread_detach(task->thread);
-    }
-  }
-  archive_helper_free_snapshots(snapshots, count);
-}
+/* Extraction runs in-process (src/extract_engine.c + the vendored zip/rar/7z
+ * leaves), so there is no helper-side task list to recover after a restart:
+ * an interrupted unpack dies with the process, exactly like every other task. */
 
 static enum MHD_Result
 create_task_response(struct MHD_Connection *conn, task_op_t op,
@@ -2393,7 +2361,7 @@ api_launch_elf(struct MHD_Connection *conn, const char *body,
                            "another task is running");
   }
 
-  if(archive_helper_send_elf(path)) {
+  if(elfldr_send(path)) {
     int error = errno;
     result = send_json_error_detail(
       conn, error == ENOTSUP ? MHD_HTTP_NOT_IMPLEMENTED :
@@ -2537,18 +2505,6 @@ api_extract(struct MHD_Connection *conn, const char *body, size_t body_size) {
         errno == ENOMEM ? NULL : destination);
       goto done;
     }
-  }
-  if(archive_helper_ensure()) {
-    /* ensure() 已尝试自拉起并重试过仍失败：ELF 没部署和没运行是两种
-       问题，用户要做的动作完全不同，别用同一句话糊过去。 */
-    int elf_ok = archive_helper_elf_installed();
-    result = send_json_error_detail(
-      conn, MHD_HTTP_SERVICE_UNAVAILABLE,
-      elf_ok ? "WFM 7zip helper is not running" :
-               "7zip helper ELF is missing at /data/wfm/wfm-7zip-helper.elf",
-      elf_ok ? "archive_helper_not_running" : "archive_helper_elf_missing",
-      NULL);
-    goto done;
   }
   {
     file_task_t *task = calloc(1, sizeof(*task));

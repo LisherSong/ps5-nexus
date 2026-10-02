@@ -917,6 +917,14 @@ api_install_poll(struct MHD_Connection *conn, const char *body, size_t body_size
     json_escape(&b, task->current[0] ? task->current : task->src);
     strbuf_append(&b, ",\"note\":");
     json_escape(&b, task->error[0] ? task->error : "");
+    if(task->error_code[0]) {
+      strbuf_append(&b, ",\"error_code\":");
+      json_escape(&b, task->error_code);
+      if(task->error_arg[0]) {
+        strbuf_append(&b, ",\"error_arg\":");
+        json_escape(&b, task->error_arg);
+      }
+    }
     strbuf_append(&b, "}");
   }
   pthread_mutex_unlock(&g_tasks_lock);

@@ -14,7 +14,6 @@
 #endif
 
 #include "app_installer.h"
-#include "archive_helper.h"
 #include "filemgr.h"
 #include "notify.h"
 #include "websrv.h"
@@ -156,12 +155,8 @@ main(int argc, char **argv) {
   printf("PS5 Nexus %s\n", VERSION_TAG);
 
 #ifdef __SCE__
-  if(archive_helper_autostart()) {
-    perror("start wfm-7zip-helper");
-  }
   app_install_if_needed();
 #endif
-  filemgr_recover_extract_tasks();
 
   signal(SIGPIPE, SIG_IGN);
   signal(SIGCHLD, SIG_IGN);

@@ -55,8 +55,8 @@ COMMON_SRCS := src/main.c src/websrv.c src/filemgr.c src/file_response.c src/tas
   src/upload.c src/download.c src/text.c src/list.c src/space.c src/fs_util.c \
   src/json_util.c src/path_util.c src/asset.c src/mime.c src/notify.c \
   src/pkg_installer.c src/pkg_info.c src/nexus_port.c src/transfer.c \
-  src/archive_extract.c src/archive_helper.c
-PS5_SRCS    := $(COMMON_SRCS) src/app_installer.c
+  src/archive_extract.c src/elfldr.c
+PS5_SRCS    := $(COMMON_SRCS) src/app_installer.c src/cpu_support_stub.c
 LINUX_SRCS  := $(COMMON_SRCS)
 BASE_ASSETS := $(filter-out %.dds,$(wildcard assets/*))
 ifneq ($(filter linux,$(MAKECMDGOALS)),)
@@ -65,6 +65,12 @@ else
 ASSETS      := $(filter-out assets/icon0.png,$(BASE_ASSETS))
 endif
 GEN_SRCS    := $(patsubst assets/%,gen/%, $(ASSETS:=.c))
+
+# Object trees. Two separate trees: PS5 (prospero-clang) vs host (cc/g++)
+# objects differ in architecture and must never mix. Defined BEFORE the
+# ARCH_OBJS patsubsts below -- those use := and need these already set.
+PS5_OBJDIR     := ps5-obj
+LINUX_OBJDIR   := linux-obj
 
 # ------------------------------------------------------- NAS backends (vendor)
 # Vendored libsmb2 (SMB2/3) and libnfs (NFSv3/v4) behind src/transfer.c. Without
@@ -108,8 +114,68 @@ else
 TP_SRCS :=
 endif
 
-PS5_OBJDIR     := ps5-obj
-LINUX_OBJDIR   := linux-obj
+# ------------------------------------------------ archive engines (in-process)
+# Extraction runs IN THIS PROCESS (ZIP / RAR / 7z, encrypted + volume sets) via
+# src/extract_engine.c over vendored minizip-ng(+zlib), the 7z SDK and unrar
+# 7.20.1 in RARDLL mode (C++). This replaces the external helper ELF: no
+# /data/wfm/wfm-7zip-helper.elf to deploy, no elfldr round-trip at enqueue
+# time, and the host build can exercise REAL unpacking (hosttest 14-series).
+# The engine files are ours but must NOT take the main -Wall -Werror -Oz flags:
+# they compile against the vendored headers and keep upstream-agnostic warnings
+# relaxed, exactly like the vendor objects.
+ARCH_SRCS := src/extract_engine.c src/zip_extract.c src/rar_extract.c \
+  src/sevenz_extract.c src/sevenz_chain.c src/sevenz_header.c \
+  src/sevenz_volstream.c src/sevenz_mt.c src/zipx_volume.c \
+  src/zipx_volstream.c src/zipx_common.c
+
+CXX      ?= $(dir $(CC))prospero-clang++
+HOST_CXX ?= c++
+
+# Source set mirrors UnRARDll.vcxproj's ClCompile list minus the Windows-only
+# isnt.cpp / motw.cpp (the unrar UNIX makefile omits them too; PS5/linux both
+# use the _UNIX branch where their symbols are #ifdef'd out).
+UNRAR7_SRCS := \
+  third_party/unrar7/archive.cpp third_party/unrar7/arcread.cpp third_party/unrar7/blake2s.cpp \
+  third_party/unrar7/cmddata.cpp third_party/unrar7/consio.cpp third_party/unrar7/crc.cpp \
+  third_party/unrar7/crypt.cpp third_party/unrar7/dll.cpp third_party/unrar7/encname.cpp \
+  third_party/unrar7/errhnd.cpp third_party/unrar7/extinfo.cpp third_party/unrar7/extract.cpp \
+  third_party/unrar7/filcreat.cpp third_party/unrar7/file.cpp third_party/unrar7/filefn.cpp \
+  third_party/unrar7/filestr.cpp third_party/unrar7/find.cpp third_party/unrar7/getbits.cpp \
+  third_party/unrar7/global.cpp third_party/unrar7/hash.cpp third_party/unrar7/headers.cpp \
+  third_party/unrar7/largepage.cpp third_party/unrar7/match.cpp \
+  third_party/unrar7/options.cpp third_party/unrar7/pathfn.cpp \
+  third_party/unrar7/qopen.cpp third_party/unrar7/rar.cpp third_party/unrar7/rarpch.cpp \
+  third_party/unrar7/rarvm.cpp third_party/unrar7/rawread.cpp third_party/unrar7/rdwrfn.cpp \
+  third_party/unrar7/rijndael.cpp third_party/unrar7/rs.cpp third_party/unrar7/rs16.cpp \
+  third_party/unrar7/scantree.cpp third_party/unrar7/secpassword.cpp third_party/unrar7/sha1.cpp \
+  third_party/unrar7/sha256.cpp third_party/unrar7/smallfn.cpp third_party/unrar7/strfn.cpp \
+  third_party/unrar7/strlist.cpp third_party/unrar7/system.cpp third_party/unrar7/threadpool.cpp \
+  third_party/unrar7/timefn.cpp third_party/unrar7/ui.cpp third_party/unrar7/unicode.cpp \
+  third_party/unrar7/unpack.cpp third_party/unrar7/volume.cpp
+
+ARCH_TP_C_SRCS := $(wildcard third_party/zlib/src/*.c) \
+  $(wildcard third_party/minizip-ng/src/*.c) $(wildcard third_party/7z/*.c)
+
+# AesOpt.c hard-codes x86 AES-NI / AVX / VAES intrinsics (PS5 is Zen 2: all
+# present). HAVE_WZAES / HAVE_PKCRYPT switch on minizip-ng's two ZIP
+# encryption paths; their crypto backend is the in-tree mz_crypt_wfm.c.
+ARCH_C_FLAGS := -O2 -w -Isrc -Ithird_party/unrar7 -Ithird_party/zlib/include \
+  -Ithird_party/minizip-ng/include -Ithird_party/7z \
+  -DHAVE_ZLIB -DZLIB_COMPAT -DHAVE_UNISTD_H=1 -D_FILE_OFFSET_BITS=64 \
+  -D_LARGEFILE64_SOURCE -DHAVE_FSEEKO -DZ7_PPMD_SUPPORT -DHAVE_WZAES -DHAVE_PKCRYPT
+ARCH_C_FLAGS_7Z := $(ARCH_C_FLAGS) -maes -mavx2 -mvaes
+UNRAR7_CXX_FLAGS      := -O2 -w -std=c++17 -DRARDLL -D_FILE_OFFSET_BITS=64 -D_LARGEFILE_SOURCE
+# prospero-clang++ defaults to -stdlib=libc++; state it explicitly for clarity.
+UNRAR7_CXX_FLAGS_PS5  := $(UNRAR7_CXX_FLAGS) -stdlib=libc++
+UNRAR7_CXX_FLAGS_HOST := $(UNRAR7_CXX_FLAGS)
+
+PS5_ARCH_OBJS   := $(patsubst src/%.c,$(PS5_OBJDIR)/src/%.o,$(ARCH_SRCS)) \
+  $(patsubst %.c,$(PS5_OBJDIR)/%.o,$(ARCH_TP_C_SRCS)) \
+  $(patsubst %.cpp,$(PS5_OBJDIR)/%.o,$(UNRAR7_SRCS))
+LINUX_ARCH_OBJS := $(patsubst src/%.c,$(LINUX_OBJDIR)/src/%.o,$(ARCH_SRCS)) \
+  $(patsubst %.c,$(LINUX_OBJDIR)/%.o,$(ARCH_TP_C_SRCS)) \
+  $(patsubst %.cpp,$(LINUX_OBJDIR)/%.o,$(UNRAR7_SRCS))
+
 PS5_TP_OBJS    := $(patsubst %.c,$(PS5_OBJDIR)/%.o,$(TP_SRCS))
 LINUX_TP_OBJS  := $(patsubst %.c,$(LINUX_OBJDIR)/%.o,$(TP_SRCS))
 
@@ -175,10 +241,80 @@ $(LINUX_OBJDIR)/third_party/libnfs/%.o: third_party/libnfs/%.c third_party/libnf
 	@mkdir -p $(dir $@)
 	$(HOST_CC) $(NFS_TP_FLAGS) -c -o $@ $<
 
-$(BIN): $(PS5_SRCS) $(GEN_SRCS) $(PS5_TP_OBJS)
-	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(filter %.c,$^) $(PS5_TP_OBJS) $(LDADD)
+# Archive engine + vendor objects. Layout inside each objdir:
+#   <objdir>/src/...          our own non-engine sources (main flags, -Werror)
+#   <objdir>/gen/...          generated asset modules (main flags)
+#   <objdir>/arch/src/...     archive-engine TUs (ARCH_C_FLAGS, relaxed)
+#   <objdir>/third_party/...  vendored libs (per-library flags)
+# The split exists because the engine TUs compile against the vendored headers
+# and keep warnings relaxed, like the vendors; -Werror is ours only.
+# ⚠️ flag-stamp caveat: no stamp files here -- after changing ARCH_C_FLAGS or
+# UNRAR7_CXX_FLAGS, rm -rf the objdir or `make clean`; make cannot see it.
+PS5_MAIN_OBJS   := $(patsubst src/%.c,$(PS5_OBJDIR)/src/%.o,$(filter src/%,$(PS5_SRCS))) \
+  $(patsubst gen/%.c,$(PS5_OBJDIR)/gen/%.o,$(GEN_SRCS))
+LINUX_MAIN_OBJS := $(patsubst src/%.c,$(LINUX_OBJDIR)/src/%.o,$(filter src/%,$(LINUX_SRCS))) \
+  $(patsubst gen/%.c,$(LINUX_OBJDIR)/gen/%.o,$(GEN_SRCS))
+
+PS5_ARCH_OBJS   := $(patsubst src/%.c,$(PS5_OBJDIR)/arch/src/%.o,$(ARCH_SRCS)) \
+  $(patsubst %.c,$(PS5_OBJDIR)/%.o,$(ARCH_TP_C_SRCS)) \
+  $(patsubst %.cpp,$(PS5_OBJDIR)/%.o,$(UNRAR7_SRCS))
+LINUX_ARCH_OBJS := $(patsubst src/%.c,$(LINUX_OBJDIR)/arch/src/%.o,$(ARCH_SRCS)) \
+  $(patsubst %.c,$(LINUX_OBJDIR)/%.o,$(ARCH_TP_C_SRCS)) \
+  $(patsubst %.cpp,$(LINUX_OBJDIR)/%.o,$(UNRAR7_SRCS))
+
+$(PS5_OBJDIR)/src/%.o: src/%.c
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -c -o $@ $<
+$(PS5_OBJDIR)/gen/%.o: gen/%.c | gen
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -c -o $@ $<
+$(LINUX_OBJDIR)/src/%.o: src/%.c
+	@mkdir -p $(dir $@)
+	$(HOST_CC) $(LINUX_CFLAGS) -c -o $@ $<
+$(LINUX_OBJDIR)/gen/%.o: gen/%.c | gen
+	@mkdir -p $(dir $@)
+	$(HOST_CC) $(LINUX_CFLAGS) -c -o $@ $<
+
+$(PS5_OBJDIR)/arch/src/%.o: src/%.c
+	@mkdir -p $(dir $@)
+	$(CC) $(ARCH_C_FLAGS) -c -o $@ $<
+$(LINUX_OBJDIR)/arch/src/%.o: src/%.c
+	@mkdir -p $(dir $@)
+	$(HOST_CC) $(ARCH_C_FLAGS) -c -o $@ $<
+
+$(PS5_OBJDIR)/third_party/zlib/%.o: third_party/zlib/%.c
+	@mkdir -p $(dir $@)
+	$(CC) $(ARCH_C_FLAGS) -c -o $@ $<
+$(PS5_OBJDIR)/third_party/minizip-ng/%.o: third_party/minizip-ng/%.c
+	@mkdir -p $(dir $@)
+	$(CC) $(ARCH_C_FLAGS) -c -o $@ $<
+$(PS5_OBJDIR)/third_party/7z/%.o: third_party/7z/%.c
+	@mkdir -p $(dir $@)
+	$(CC) $(ARCH_C_FLAGS_7Z) -c -o $@ $<
+$(PS5_OBJDIR)/third_party/unrar7/%.o: third_party/unrar7/%.cpp
+	@mkdir -p $(dir $@)
+	$(CXX) $(UNRAR7_CXX_FLAGS_PS5) -c -o $@ $<
+$(LINUX_OBJDIR)/third_party/zlib/%.o: third_party/zlib/%.c
+	@mkdir -p $(dir $@)
+	$(HOST_CC) $(ARCH_C_FLAGS) -c -o $@ $<
+$(LINUX_OBJDIR)/third_party/minizip-ng/%.o: third_party/minizip-ng/%.c
+	@mkdir -p $(dir $@)
+	$(HOST_CC) $(ARCH_C_FLAGS) -c -o $@ $<
+$(LINUX_OBJDIR)/third_party/7z/%.o: third_party/7z/%.c
+	@mkdir -p $(dir $@)
+	$(HOST_CC) $(ARCH_C_FLAGS_7Z) -c -o $@ $<
+$(LINUX_OBJDIR)/third_party/unrar7/%.o: third_party/unrar7/%.cpp
+	@mkdir -p $(dir $@)
+	$(HOST_CXX) $(UNRAR7_CXX_FLAGS_HOST) -c -o $@ $<
+
+# Link with the C++ driver so libc++ (PS5) / libstdc++ (host) comes in for the
+# unrar objects. Every TU is pre-built into its objdir with its OWN flag set --
+# nothing is compiled inside the link command any more, so the driver language
+# mixups that -x c/-x none used to paper over cannot happen.
+$(BIN): $(PS5_MAIN_OBJS) $(PS5_TP_OBJS) $(PS5_ARCH_OBJS)
+	$(CXX) $(CFLAGS) $(LDFLAGS) -o $@ $(PS5_MAIN_OBJS) $(PS5_TP_OBJS) $(PS5_ARCH_OBJS) $(LDADD)
 	$(STRIP) $@
 
-$(LINUX_BIN): $(LINUX_SRCS) $(GEN_SRCS) $(LINUX_TP_OBJS)
-	$(HOST_CC) $(LINUX_CFLAGS) -o $@ $(filter %.c,$^) $(LINUX_TP_OBJS) $(LINUX_LDADD)
+$(LINUX_BIN): $(LINUX_MAIN_OBJS) $(LINUX_TP_OBJS) $(LINUX_ARCH_OBJS)
+	$(HOST_CXX) $(LINUX_CFLAGS) -o $@ $(LINUX_MAIN_OBJS) $(LINUX_TP_OBJS) $(LINUX_ARCH_OBJS) $(LINUX_LDADD)
 	$(HOST_STRIP) $@

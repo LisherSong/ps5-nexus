@@ -93,7 +93,7 @@ http://<IP>:2026/api/diag
 
 - **真 PS5 `.pkg` 内核安装**需要 `kstuff` 在跑；没装时 `/api/pkg/enqueue` 会报 unsupported（文件浏览/上传/解压不受影响）。
 - **PFS 存档真正写回**（解密/重签）未接：`save/backup` 做的是文件级快照，真机上若存档目录本身不可直接写，需要在挂载层补。
-- **解压依赖外部 helper**：`/data/wfm/wfm-7zip-helper.elf`（单独分发，不在本仓构建）。payload 启动时和**每次入队解压时**都会尝试自拉起（把该 ELF 发给本机 elfldr :9021，3s 内轮询）；若 ELF 没部署，报错会明说是 `archive_helper_elf_missing`（缺文件）而不是笼统的没运行 —— 两种问题要做的动作不同。
+- **解压已改为进程内引擎**（自研 `extract_engine`，下挂 UnRAR / LZMA SDK / minizip-ng，全部 vendored 进 `third_party/`）：不再依赖外部 helper ELF，`wfm-7zip-helper.elf` 相关报错（`archive_helper_elf_missing` 等）已整体移除。加密包由 UI 弹口令；分卷从任意卷入队都会归一到第一卷。
 - 本机（非 PS5）`:2026` 上 `app/register`、Sony `.pkg` 安装会返回 PS5-only 错，属预期。
 - **表头冻结已修**（旧案：`.fmtable` 的 `overflow:hidden` 困住 sticky th + `border-collapse:collapse` 下 sticky 边框撕裂 ⇒ 改 `separate` + 滚动收进 `main` 容器）：列表下滚时表头毛玻璃钉在吸顶工具条下沿，三个视图共用。真机复核点：WebKit 的 `backdrop-filter` 与 sticky 组合表现。
 

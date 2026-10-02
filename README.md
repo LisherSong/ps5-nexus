@@ -65,12 +65,13 @@ Extraction covers `.zip`, `.zipx`, `.7z`, `.rar`, `.001`, `.tar`, `.gz`,
 usual double suffixes (`.tar.gz`, `.tbz2`, `.txz`, …), including encrypted
 archives and split volumes.
 
-Unpacking is delegated to the separately distributed
-[`wfm-7zip-helper.elf`](https://github.com/owendswang/wfm-7zip-helper), which
-must be present at `/data/wfm/wfm-7zip-helper.elf`. Encrypted archives are
-handled there too: when the helper needs a password it asks for one over the
-helper protocol, and this payload passes it through. Progress is reported per
-entry, and an interrupted extraction can be resumed after the payload restarts.
+Extraction runs **in-process**: the payload embeds its own engine built from
+UnRAR (RAR), the LZMA SDK (7z) and minizip-ng + zlib (zip/zipx) — no external
+helper ELF is required. Encrypted archives (ZipCrypto, AES for zip/7z/RAR) are
+supported directly: when an archive needs a password the UI asks for one and
+passes it to the engine. Progress is reported per entry, and an interrupted
+extraction can be resumed after the payload restarts. Split volumes may be
+enqueued from any part — the engine normalises them to the first volume.
 
 ### Packages
 
@@ -206,7 +207,8 @@ redirected away from the console's:
   would otherwise trim them.
 - The interface is Simplified Chinese. `assets/lang-*.js` are placeholders for
   future localisation; the UI text currently lives in `assets/index.html`.
-- The archive helper is a separate payload, not built from this repository.
+- Archive extraction runs in-process (UnRAR / LZMA SDK / minizip-ng, vendored
+  under `third_party/`); no external helper payload is involved.
 
 ## Credits
 
@@ -219,7 +221,11 @@ Built on the work of others:
 - **[libsmb2](https://github.com/sahlberg/libsmb2)** — SMB2/3 client, vendored. LGPL-2.1+.
 - **[libnfs](https://github.com/sahlberg/libnfs)** — NFSv3/v4 client, vendored. LGPL-2.1+ (BSD for the rpcgen-derived protocol files).
 - **[libmicrohttpd](https://www.gnu.org/software/libmicrohttpd/)** — embedded HTTP server, linked from the SDK. LGPL-2.1+.
-- **[owendswang/wfm-7zip-helper](https://github.com/owendswang/wfm-7zip-helper)** — archive extraction helper, distributed separately.
+- **[UnRAR](https://www.rarlab.com/rar_add.htm)** — RAR extraction (vendored, `third_party/unrar7`). Non-free but redistributable licence, extraction only.
+- **[7-Zip / LZMA SDK](https://www.7-zip.org/)** — 7z extraction (vendored, `third_party/7z`). LGPL-2.1+ / unRAR restriction.
+- **[minizip-ng](https://github.com/zlib-ng/minizip-ng)** — zip/zipx extraction incl. crypto backends (vendored, `third_party/minizip-ng`). Zlib licence.
+- **[zlib](https://zlib.net/)** — DEFLATE (vendored, `third_party/zlib`). Zlib licence.
+- **[owendswang/wfm-7zip-helper](https://github.com/owendswang/wfm-7zip-helper)** — the helper-payload approach this project originally used; it has since been replaced by the in-process engine below, thanks for showing the way.
 - **[seregonwar/zftpd](https://github.com/seregonwar/zftpd)** — socket buffer tuning reference. MIT.
 - **[itsPLK/ps5-payload-manager](https://github.com/itsPLK/ps5-payload-manager)** — payload packaging reference. GPL-3.0.
 - **[etaHEN](https://github.com/etaHEN/etaHEN)** — ShellUI URI navigation used before exit. GPL-3.0.
