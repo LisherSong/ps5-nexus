@@ -597,6 +597,18 @@ button{font:inherit;color:inherit;background:none;border:0;cursor:pointer}
 #ppFoot{flex-direction:column;align-items:stretch;gap:9px}
 #ppFoot .prow{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
 #ppFoot .phint{font-size:12px;line-height:1.55;color:var(--fg3)}
+/* 删除对话框里「正在删哪一条」。
+   用户反馈「不显示删除文件」——只写「正在删除」四个字，一个上万条目的游戏目录
+   要删几分钟，屏幕上没有任何变化，读起来就是卡死。
+   ⚠️ 单行 + 从**尾部**截断：长路径的前半段（/user/user/…）永远一样，只有文件名在变。
+   不用 `direction:rtl` 取尾巴（它会把路径里的 `:` `/` 排到反的边上），截断由 JS 先做。
+   ⚠️ 必须 nowrap：换行会把对话框高度顶起来，底下的「取消」跟着跳。 */
+.delcur{margin:0 0 12px;font:12.5px/1.5 var(--mono);color:var(--fg3);
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-height:1.5em}
+.delcur b{color:var(--fg2);font-weight:500}
+/* 存档页的「存档在哪」说明行。用 code 标路径，避免长路径被读成一串普通文字。 */
+.svhint{margin-top:10px;font-size:12px;line-height:1.7;color:var(--fg3)}
+.svhint code{font:11.5px var(--mono);background:var(--s5);padding:2px 6px;border-radius:5px;color:var(--brand-text)}
 
 /* ---------- 轻提示 toast（诚实反馈的最小落点：真机下无契约的动作给可见文案） ---------- */
 .toast{position:fixed;left:50%;bottom:32px;transform:translate(-50%,10px);
@@ -1196,6 +1208,11 @@ button{font:inherit;color:inherit;background:none;border:0;cursor:pointer}
           <div class="snap"><span class="tm">—</span><span class="why">点右侧「扫描本机存档」，列出这台机器上所有游戏留下的存档</span></div>
         </div>
       </div>
+      <!-- 存档和游戏本体是**两个地方**。用户会顺手把游戏安装目录
+           （/data/homebrew/PPSA23226-… 这种）当成存档，然后在存档页反复找不到它。
+           写清楚「存档在哪、本体在哪」，比让他自己猜便宜得多。 -->
+      <div class="svhint">存档住在 <code>/user/home/&lt;账号&gt;/savedata_prospero/&lt;TITLE_ID&gt;</code>。
+        游戏安装目录（如 <code>/data/homebrew/…</code>）里没有存档 —— 那是本体，不是存档。</div>
     </div>
   </section>
   </section><!-- /view-saves -->
@@ -1289,8 +1306,13 @@ button{font:inherit;color:inherit;background:none;border:0;cursor:pointer}
           <button aria-pressed="true">SMB</button><button aria-pressed="false">NFS</button>
         </div>
       </div>
-      <div class="fld"><label for="nAddr">地址　·　主机/共享（NFS 为 主机:/导出名；反斜杠写法 192.168.1.10\shared 也认）</label>
+      <div class="fld"><label for="nAddr">地址　·　主机/共享名（NFS 为 主机:/导出名；反斜杠写法 192.168.1.10\shared 也认）</label>
         <input type="text" id="nAddr" placeholder="192.168.1.10/shared" autocomplete="off">
+        <!-- 用户会问「NAS 连接必须指定一个文件夹吗，我的 SMB 共享就是根目录怎么办」。
+             答案是：共享名（NFS 是导出名）**必须**写，共享名**后面**的文件夹可以完全不写。 -->
+        <div class="svhint" style="margin-top:8px">共享名一定要写（SMB 按共享名建立连接）；
+          <b>共享名后面可以不再写文件夹</b> —— 填 <code>主机/共享名</code> 进去的就是该共享的根目录，
+          想更深就继续加 <code>/子目录</code>。</div>
       </div>
       <div class="fld"><label for="nPort">端口　·　留空用默认（SMB 445 / NFS 2049）</label>
         <input type="number" id="nPort" placeholder="" autocomplete="off" inputmode="numeric">
@@ -1413,6 +1435,9 @@ button{font:inherit;color:inherit;background:none;border:0;cursor:pointer}
         <div><b id="jobBarPct">0%</b><span>进度</span></div>
         <div><b id="jobBarCount">—</b><span>已删条目</span></div>
       </div>
+      <!-- 正在删的那一条（用户反馈「不显示删除文件」）。长路径从尾部截断，
+           整个路径放在 title 里，鼠标停一下/长按能看到全貌。 -->
+      <div class="delcur" id="jobBarCur" title="">—</div>
       <div class="space"><span id="jobBarText">正在删除</span>
         <button class="btn sm" id="jobBarCancel" title="停止删除（已删掉的部分不会恢复）">取消</button></div>
     </div>
@@ -1558,7 +1583,33 @@ async function renderSaveSaves() {
   const saves = j.saves || [];
   if (cnt) cnt.textContent = saves.length + "";
   if (!saves.length) {
-    if (box) box.innerHTML = '<div class="snaps"><div class="snap"><span class="tm">—</span><span class="why">这台机器上没有找到任何存档目录</span></div></div>';
+    /* ⭐ 空列表有三种完全不同的成因，用户该做的事也完全不同：
+         (a) 提权失败 ⇒ /user/home 根本打不开（要 kstuff 的内核权限）；
+         (b) 打得开但里面没有账号目录；
+         (c) 有账号、但确实没有存档标题。
+       以前这三种在页面上是同一句话「没找到任何存档目录」—— 用户没法告诉我们
+       是哪种，我们也没法从截图里猜。服务端现在把每个探测根的结果放进 roots，
+       这里据此给一句可执行的结论 + 一行原始诊断。 */
+    const roots = j.roots || [];
+    const blocked = roots.filter(r => !r.opened);
+    const accounts = roots.reduce((n, r) => n + (Number(r.accounts) || 0), 0);
+    let why;
+    if (j.escalated === false)
+      why = "存档域提权失败，读不到 /user/home —— 需要 kstuff 提供的内核权限";
+    else if (!roots.length)
+      why = "没有探测到存档根目录（/user/home 与 /mnt/ext1/home 都不存在）";
+    else if (!accounts && blocked.length)
+      why = "读不到存档根目录：" + blocked.map(r => r.root).join("、") + "（权限不足或未挂载）";
+    else if (!accounts)
+      why = "存档根目录里没有任何账号目录 —— 这台机器还没有登录过 PSN 账号？";
+    else
+      why = "已扫到 " + accounts + " 个账号目录，但里面没有存档标题（这台机器还没玩过带存档的游戏）";
+    const diag = roots.map(r => (r.opened ? "✓" : "✗") + " " + r.root +
+      (r.accounts ? "（" + r.accounts + " 个账号）" : "")).join("   ");
+    if (box) box.innerHTML = '<div class="snaps">'
+      + '<div class="snap"><span class="tm">空</span><span class="why">' + esc(why) + '</span></div>'
+      + (diag ? '<div class="snap"><span class="tm">诊断</span><span class="why" style="font:11.5px/1.6 var(--mono)">' + esc(diag) + '</span></div>' : "")
+      + '</div>';
     return;
   }
   saves.sort((a, b) => (b.mtime || 0) - (a.mtime || 0));
@@ -1789,6 +1840,16 @@ const pctOf = t => t.state_name === "done" ? 100
    ⚠️ 绝不能拿 fmt() 显示它 —— 10240 个条目会被写成「10.0 KB」，那是把单位看错了一档。
    不用 toLocaleString：PS5 的 WebKit 上分组符号依赖 locale 数据，干脆自己插千位分隔。 */
 const fmtCount = n => String(n == null ? 0 : n).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+/* 长路径从**尾部**截断：删除/复制这类任务的 `current` 是绝对路径，前半段
+   （`/user/home/…`、`/mnt/ext1/games/…`）在一整轮里几乎不变，只有文件名在变 ——
+   从头部截断等于把唯一在动的信息扔掉。
+   ⚠️ 不用 CSS `direction:rtl` + text-overflow 取尾巴：那会按 bidi 规则重排路径里的
+   `:` `/` 和中文，同一串在不同 WebKit 上排出来不一样。这里就是纯字符串切片，
+   CSS 那边只负责单行与 `text-overflow` 兜底（切片后仍可能超宽）。 */
+function tailPath(p, n) {
+  const s = String(p == null ? "" : p);
+  return s.length > n ? "…" + s.slice(s.length - n) : s;
+}
 
 const apiGet = p => fetch(p).then(r => r.json()).catch(() => null);
 const apiPost = (p, data) => fetch(p, {
@@ -2168,8 +2229,14 @@ function fsUpdateToolbar() {
   if (FS_CLIPBOARD && FS_CLIPBOARD.items.length) {
     const verb = FS_CLIPBOARD.op === "move" ? "剪切" : "复制";
     const names = FS_CLIPBOARD.items.map(i => i.name).join(", ");
+    /* 来源是本机还是 NAS 必须写在条上：剪切板里那串路径在两种情况下长得一样
+       （都是「主机/共享/路径」或「/data/…」），用户看不见「我现在拿到的是哪边的东西」，
+       而粘贴的成败完全取决于这件事。 */
+    const srcInfo = FS_CLIPBOARD.src || { scheme: "local" };
+    const from = srcInfo.scheme === "local"
+      ? "" : `，来自 ${srcInfo.scheme === "nfs" ? "NFS" : "SMB"} ${srcInfo.addr}`;
     ci.style.display = "";
-    ci.textContent = `剪贴板：${verb} ${FS_CLIPBOARD.items.length} 项（${names}）→ 点击「粘贴」放到当前目录`;
+    ci.textContent = `剪贴板：${verb} ${FS_CLIPBOARD.items.length} 项（${names}）${from} → 点击「粘贴」放到当前目录`;
   } else {
     ci.style.display = "none";
   }
@@ -2241,11 +2308,19 @@ document.getElementById("btnRename").addEventListener("click", () => {
   renamePath(items[0].path, items[0].name);
 });
 
-/* 复制/移动：把选中项放入剪贴板 */
+/* 复制/移动：把选中项放入剪贴板。
+ * ⚠️ 必须把**来源视图的 scheme 与 NAS 连接信息**一起快照下来：用户是「先在 NAS
+ * 里勾选 → 切到本机目录 → 再粘贴」，等到粘贴时 fsView.state 已经是本机那个了，
+ * 凭据/user/pass 早被清空 —— 那时再去读就只剩一条本机路径，远程源无从谈起。 */
 function fsSetClipboard(op) {
   const items = fsSelectedItems();
   if (!items.length) { toast("请先选中要操作的项"); return; }
-  FS_CLIPBOARD = { op, items };
+  const st = fsView.state;
+  FS_CLIPBOARD = {
+    op, items,
+    src: { scheme: st.scheme || "local", addr: st.path,
+           user: st.user || "", pass: st.pass || "", port: st.port || "" },
+  };
   fsUpdateToolbar();
   toast((op === "move" ? "已剪切" : "已复制") + ` ${items.length} 项，切换目录后点「粘贴」`);
 }
@@ -2255,11 +2330,51 @@ document.getElementById("btnClearClip").addEventListener("click", () => {
   FS_CLIPBOARD = null; fsUpdateToolbar(); toast("已清空剪贴板");
 });
 
-/* 粘贴：把剪贴板内容复制/移动到当前目录 */
+/* 粘贴：把剪贴板内容复制/移动到当前目录。
+ *
+ * 四条方向，只有前两条能做，而且**方向必须由 scheme 决定**，不能只看路径：
+ *   NAS → 本机   ⇒ /api/nas/copy（远程源走 transfer 层递归拉取）
+ *   本机 → 本机   ⇒ /api/copy | /api/move（原来的路）
+ *   本机 → NAS   ⇒ 明确拒绝：transfer 层只有读接口，没有写接口。
+ *   NAS → NAS    ⇒ 同上。
+ * 🪤 以前一律走 /api/copy，而那条路的第一个动作是 lstat(src) —— NAS 路径在本机
+ * 根本不存在，于是用户对着一个看得见的文件被告知 "source not found"。
+ * 更糟的是反方向：dst 是 "192.168.1.3/PS5_Games"（相对形状），不挡的话服务端会
+ * 真的在当前目录下建出这棵树，任务还报成功。 */
 document.getElementById("btnPaste").addEventListener("click", async () => {
   if (!FS_CLIPBOARD || !FS_CLIPBOARD.items.length) return;
   const op = FS_CLIPBOARD.op;
+  const srcInfo = FS_CLIPBOARD.src || { scheme: "local" };
+  const dstScheme = fsView.state.scheme || "local";
+  const srcRemote = srcInfo.scheme !== "local";
+  const dstRemote = dstScheme !== "local";
   const paths = FS_CLIPBOARD.items.map(i => i.path).join("\n");
+
+  if (dstRemote) {
+    toast("暂不支持向 NAS 写入（目前只能从 NAS 复制到本机）");
+    return;
+  }
+  if (srcRemote) {
+    const j = await apiJson("/api/nas/copy", {
+      scheme: srcInfo.scheme, paths, dst: fsView.state.path,
+      user: srcInfo.user, pass: srcInfo.pass, port: srcInfo.port,
+    });
+    if (!j || !j.ok) {
+      toast("复制失败：" + (j && j.error ? j.error : "服务不可用"));
+      return;
+    }
+    /* 「移动」在这里只能是「复制」：远程删除没有实现，不能假装删掉了。
+       说是就是，宁可说清能力边界，也不要让用户以为 NAS 上的原件没了。 */
+    toast(op === "move"
+      ? "已开始复制（NAS 上的原件不会删除：暂不支持远程删除）"
+      : "已开始从 NAS 复制到本机");
+    if (op === "move") FS_CLIPBOARD = null;
+    fsClearSel();
+    fsUpdateToolbar();
+    if (j.task_id) watchTask(j.task_id, () => fsView.refresh());
+    return;
+  }
+
   const j = await apiJson("/api/" + op, { paths, dst: fsView.state.path, overwrite: "0" });
   if (j && j.ok) {
     toast((op === "move" ? "移动" : "复制") + "完成");
@@ -2313,12 +2428,26 @@ function renderJob(tasks) {
        delArmed 会随脚本重置，那样跑完既没有结果提示、文件列表也还挂着已经删掉的名字。
        代价是别的标签页发起的删除也会在这一页报一次结果，这是对的：目录确实变了。 */
     delArmed = true;
+    /* 计数阶段 total 还是 0（服务端先数一遍再删，见 filemgr.c 的 TASK_DELETE 分支）。
+       这一段可能持续几秒（上万条目），必须说出来 —— 否则进度条纹丝不动，
+       和「卡死」在屏幕上完全一样。 */
+    const counting = !(Number(run.total) > 0);
     document.getElementById("jobBarText").textContent =
-      run.state_name === "queued" ? "等待开始：删除" : "正在删除";
+      run.state_name === "queued" ? "等待开始：删除"
+      : counting ? "正在统计条目…"
+      : "正在删除";
     document.getElementById("jobBarFill").style.width = pct + "%";
     document.getElementById("jobBarCount").textContent =
-      fmtCount(run.progress) + " / " + fmtCount(run.total) + " 项";
+      counting ? "统计中…" : fmtCount(run.progress) + " / " + fmtCount(run.total) + " 项";
     document.getElementById("jobBarPct").textContent = pct + "%";
+    /* 正在删的那一条。服务端 note 在没有 error 时就是 task->current（绝对路径）。
+       计数阶段显示的是正在被统计的条目，同样是有用的信息。 */
+    const cur = document.getElementById("jobBarCur");
+    if (cur) {
+      const full = decodeFsText(run.note || "");
+      cur.textContent = full ? tailPath(full, 64) : "—";
+      cur.title = full;
+    }
     document.getElementById("jobBarCancel").dataset.id = String(run.id);
     return;
   }
@@ -2417,15 +2546,35 @@ document.getElementById("selAll").addEventListener("change", e => {
   document.querySelectorAll("#fsTbody input[data-fsck]").forEach(cb => { cb.checked = on; cb.closest("tr").classList.toggle("sel", on); });
   fsUpdateToolbar();
 });
-/* 行内复选框：阻止冒泡到行点击（避免触发预览/安装） */
+/* 行内勾选列：阻止冒泡到行点击（避免预览/安装/**误触进目录**）。
+   🪤 用户报的 bug：文件夹行点勾选框会直接进到文件夹里。原来这里只认
+   `input[data-fsck]`，点在它外面一点就不拦 —— 而这一格有 52px 宽（`.csel`），
+   复选框本体加放大命中 `<label class="selhit">` 也只有 28px，四周全是裸露的
+   `<td>` 空白。点在那里 `closest('input[data-fsck]')` 返回 null ⇒ 不拦 ⇒ 继续冒泡到
+   fsNav 的 panel 处理器 ⇒ 命中 `[data-dir]` ⇒ nav.go() 进目录。
+   ⇒ 判据改成**整格** `td.csel`，格内任何位置都只切选中态。
+   ⚠️ label 与 input 两个分支不能都翻一次：点 label 时浏览器会**再合成一次** input 的
+   click，两处各翻一次等于没翻。所以点非 input 的位置要 preventDefault() 掐掉那次转发、
+   由这里自己翻；点在 input 上则不能 preventDefault —— 那会把复选框原生已经翻好的
+   状态**撤销**回去（checkbox 的激活行为在 click 派发之前就发生了）。 */
 document.getElementById("fsTbody").addEventListener("click", e => {
-  const cb = e.target.closest('input[data-fsck]');
-  if (!cb) return;
+  const cell = e.target.closest("#fsTbody td.csel");
+  if (!cell) return;
+  const box = cell.querySelector('input[data-fsck]');
+  if (!box) return;                    /* 「.. 返回上一级」那一行的空占位格，交给行点击 */
   e.stopPropagation();
-  const tr = cb.closest("tr");
+  let on;
+  if (e.target.closest('input[data-fsck]') === box) {
+    on = box.checked;
+  } else {
+    e.preventDefault();
+    on = !box.checked;
+    box.checked = on;
+  }
+  const tr = cell.closest("tr");
   const path = tr.dataset.path || tr.dataset.dir;
-  fsToggleSel(path, cb.checked);
-  tr.classList.toggle("sel", cb.checked);
+  fsToggleSel(path, on);
+  tr.classList.toggle("sel", on);
   document.getElementById("selAll").checked = FS_SELECTED.size === FS_ENTRIES.length && FS_ENTRIES.length > 0;
 });
 /* 列头排序 */

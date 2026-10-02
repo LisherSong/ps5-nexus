@@ -1445,7 +1445,12 @@ static int
 remove_path(file_task_t *task, const char *path) {
   struct stat st;
 
-  task_update(task, TASK_RUNNING, path, 0, NULL);
+  /* 每处理一个条目就 +1 —— 只有删除任务的 done 是**条目数**（分母由
+     task_worker 的 TASK_DELETE 分支先数出来）。跨设备移动的兜底路径
+     (finish_copied_move) 也会走到这里，而 move 的 done 是**字节**，
+     混进条目数会把它的进度打乱 ⇒ 按 op 分叉，不是无条件加。
+     传 0 时 task_update 不碰 done，行为与改前完全一致。 */
+  task_update(task, TASK_RUNNING, path, task->op == TASK_DELETE ? 1 : 0, NULL);
 
   if(task_cancel_requested(task)) {
     return -1;
@@ -1507,7 +1512,15 @@ validate_task_target(const char *src, const char *target, int overwrite,
     return -1;
   }
   if(lstat(src, &src_st)) {
-    snprintf(error, error_size, "source not found");
+    /* NAS 上的文件走到这里是必然的：本机根本不认识 "192.168.1.3/PS5_Games/x"
+       这种路径。原来一律回 "source not found"，用户对着一个明明看得见的文件
+       被告知「源不存在」—— 真正的原因（远程源要走 NAS 拉取）一个字都没说。
+       判据用「不以 '/' 开头」：本地路径在本进程里恒是绝对路径。 */
+    if(src[0] != '/')
+      snprintf(error, error_size,
+               "source not found（NAS 上的文件请用「复制到本机」）");
+    else
+      snprintf(error, error_size, "source not found");
     return -1;
   }
   if(S_ISDIR(src_st.st_mode)) {
@@ -1853,7 +1866,30 @@ task_worker(void *arg) {
     }
   } else if(task->op == TASK_DELETE) {
     size_t i;
+    unsigned long long ignored_bytes = 0;
+
+    /* 删除是**条目计数**型任务（前端 isCountKind(7) 按「项」显示倒数），
+       所以必须先数一遍再删。原来这里直接进删除循环：没有 task_set_total、
+       remove_path() 的 add_done 又恒为 0 ⇒ total 与 progress 双 0，
+       进度条永远 0%，对话框上写着「0 / 0 项」—— 用户报的正是这个。
+       代价是多走一遍目录，换来的是「还剩多少」这个唯一能让人安心的信息，
+       对一个上万条目的游戏目录完全值得（复制路径本来也是先 count 再拷）。
+       ⚠️ 用的分母是 file_count + dir_count，**不是** count_path_bytes 返回的字节数：
+       remove_path() 对每个条目（文件或目录）恰好被调用一次，两个计数之和就等于
+       调用总次数 ⇒ 进度天然对齐、不会超过 100%。 */
     ret = 0;
+    for(i = 0; i < task->src_count && !ret; i++) {
+      if(count_path_bytes(task, task->srcs[i], task->srcs[i], &ignored_bytes,
+                          &task->file_count, &task->dir_count)) {
+        if(errno == ECANCELED || task_cancel_requested(task)) {
+          task_update(task, TASK_CANCELED, task->srcs[i], 0, "canceled");
+        } else {
+          task_update(task, TASK_FAILED, task->srcs[i], 0, strerror(errno));
+        }
+        return NULL;
+      }
+    }
+    task_set_total(task, task->file_count + task->dir_count);
     for(i = 0; i < task->src_count && !ret; i++) {
       ret = remove_path(task, task->srcs[i]);
     }
@@ -1946,6 +1982,16 @@ create_task_response(struct MHD_Connection *conn, task_op_t op,
     }
   }
   if(dst) {
+    /* 目标必须是一个**本地绝对路径**。用户从 NAS 视图点「粘贴」时 dst 是
+       "192.168.1.3/PS5_Games" 这种相对形状 —— 不挡的话 path_join 会照着写，
+       于是在进程当前目录下真的建出一棵 "192.168.1.3/PS5_Games" 目录树：
+       既不是用户要的（他要传到 NAS），又污染了本地磁盘，而且任务还报成功。
+       transfer 层只读（没有写接口），所以这个方向此刻只能明确拒绝。 */
+    if(dst[0] != '/') {
+      return task_request_error(conn, task, srcs, src_count,
+                                MHD_HTTP_BAD_REQUEST,
+                                "目标必须是本地路径（暂不支持向 NAS 写入）");
+    }
     for(i = 0; i < src_count; i++) {
       char target[PATH_MAX];
       char error[128] = {0};
@@ -2842,6 +2888,7 @@ filemgr_api_request(struct MHD_Connection *conn, const char *url,
     return api_app_register(conn, body, body_size);
   if(!strcmp(url, "/api/status")) return api_status(conn, body, body_size);
   if(!strcmp(url, "/api/fetch")) return api_fetch(conn, body, body_size);
+  if(!strcmp(url, "/api/nas/copy")) return api_nas_copy(conn, body, body_size);
   if(!strcmp(url, "/api/save/scan")) return api_save_scan(conn, body, body_size);
   if(!strcmp(url, "/api/save/list")) return api_save_list(conn, body, body_size);
   if(!strcmp(url, "/api/save/backup")) return api_save_backup(conn, body, body_size);

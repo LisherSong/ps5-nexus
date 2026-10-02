@@ -41,6 +41,22 @@ typedef struct {
 
 /* scheme: "local:" | "smb:" | "nfs:" (default local). */
 transfer_src_t *transfer_open(const char *scheme, const char *path);
+/* Point an ALREADY-OPEN source at another path so the connection is reused.
+ *
+ * Why it exists: the backend contexts live inside transfer_src_t, so
+ * transfer_open() per file pays a fresh TCP connect + tree connect for EVERY
+ * file. Copying a save folder of a few hundred small files over SMB is the
+ * difference between one round trip per file and three.
+ *
+ * The per-file handle is dropped here on purpose: smb_read/nfsio_read open it
+ * lazily from the URL's path, so keeping the old handle would silently serve
+ * the PREVIOUS file's bytes.
+ *
+ * Returns 0 (caller must fall back to transfer_open + transfer_close) when the
+ * new URL names a different server / share / credentials / port — reusing the
+ * connection there would send the request to the WRONG share, which is worse
+ * than being slow. Returns 1 when the repoint took effect. */
+int transfer_repoint(transfer_src_t *s, const char *path);
 /* 1 if the scheme could be opened at all on this build (i.e. it is known AND
  * its backend library was compiled in). Lets the API layer tell "smb backend
  * not built" apart from "bad path" instead of one generic error. */

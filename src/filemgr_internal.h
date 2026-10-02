@@ -181,6 +181,8 @@ enum MHD_Result api_status(struct MHD_Connection *conn, const char *body,
                            size_t body_size);
 enum MHD_Result api_fetch(struct MHD_Connection *conn, const char *body,
                           size_t body_size);
+enum MHD_Result api_nas_copy(struct MHD_Connection *conn, const char *body,
+                             size_t body_size);
 enum MHD_Result api_save_scan(struct MHD_Connection *conn, const char *body,
                               size_t body_size);
 enum MHD_Result api_save_list(struct MHD_Connection *conn, const char *body,

@@ -411,6 +411,66 @@ def main():
         check("delete removed the file",
               "real.txt" not in (list_names(c, ROOT + "/sub") or set()))
 
+        # ---- 12b. 删除是**条目计数**型任务：分母必须是条目数，不是字节 ----
+        # 用户报的现象原话：「删除多个文件的时候会出进度弹窗 但是不显示删除文件
+        # 和进度条都是 0」。根因在 TASK_DELETE 分支：它既没 task_set_total()，
+        # remove_path() 里那次 task_update(..., add_done=0, ...) 的加数又恒为 0
+        # ⇒ 分母与分子同时是 0，进度条永远 0%。
+        #
+        # 夹具故意做成「条目数与字节数不相等、且条目数能手算」的形状：
+        #   5 个文件 + 4 个目录（deltree 自身 + one + two + two/deep）= 9 项
+        # 字节和 = 1+2+3+4+3 = 13。
+        # 坏版本 ⇒ total=0；若有人把分母改成字节 ⇒ total=13。两个都会立刻变红，
+        # 所以这一条同时钉住了「有分母」和「分母的口径」。
+        deltree = os.path.join(ROOT, "deltree")
+        os.makedirs(os.path.join(deltree, "one"), exist_ok=True)
+        os.makedirs(os.path.join(deltree, "two", "deep"), exist_ok=True)
+        for n, sz in (("a.bin", 1), ("b.bin", 2), ("c.bin", 3)):
+            with open(os.path.join(deltree, n), "wb") as f:
+                f.write(b"x" * sz)
+        with open(os.path.join(deltree, "one", "d.bin"), "wb") as f:
+            f.write(b"x" * 4)
+        with open(os.path.join(deltree, "two", "deep", "e.bin"), "wb") as f:
+            f.write(b"x" * 3)
+        DEL_ENTRIES = 9          # 5 files + 4 dirs
+        DEL_BYTES = 13           # 1+2+3+4+3 —— 用来区分「条目数」和「字节数」
+
+        st, j = c.api_json("/api/delete", {"paths": deltree})
+        del_id = (j or {}).get("task_id")
+        check("delete of a whole tree queues a task",
+              j and j.get("ok") and del_id is not None, "j=%s" % j)
+        del_frames = []
+        if del_id is not None:
+            # ★ 只能走 /api/install/poll：/api/tasks 会在下一次调用时把已完结的
+            #   行摘掉，那样连 total 都读不回来（read_finished 不保号）。
+            for _ in range(200):
+                st, pj = c.api_post("/api/install/poll", {"id": str(del_id)})
+                if not pj or not pj.get("ok"):
+                    break
+                del_frames.append(pj)
+                if pj.get("state_name") in ("done", "failed", "cancelled"):
+                    break
+                time.sleep(0.02)
+        del_last = del_frames[-1] if del_frames else {}
+        check("delete task carries a non-zero item-count total",
+              (del_last.get("total") or 0) == DEL_ENTRIES,
+              "total=%s want=%s frames=%s" % (del_last.get("total"), DEL_ENTRIES,
+                                              del_frames[:2]))
+        check("delete progress climbs to total (bar no longer stuck at 0/0)",
+              del_last.get("state_name") == "done"
+              and (del_last.get("progress") or 0) == DEL_ENTRIES,
+              "last=%s" % del_last)
+        check("delete total is an item count, not a byte sum (%d != %d)"
+              % (DEL_ENTRIES, DEL_BYTES),
+              (del_last.get("total") or 0) != DEL_BYTES, "last=%s" % del_last)
+        # 进度不能超过分母（remove_path 对每个条目恰好调用一次 ⇒ 天然对齐）
+        check("delete never reports progress beyond total",
+              all((f.get("progress") or 0) <= (f.get("total") or 0)
+                  for f in del_frames),
+              "frames=%s" % del_frames[:4])
+        c.wait_idle()
+        check("delete removed the whole tree", not os.path.exists(deltree))
+
         # ---- 13. chmod (task) ----
         st, j = c.api_json("/api/chmod", {"paths": ROOT + "/up.bin",
                                           "mode": "0755", "recursive": "0"})
@@ -835,6 +895,42 @@ def main():
               scanned == found_by_list,
               "scan=%s list=%s" % (sorted(scanned), sorted(found_by_list)))
 
+        # ---- 15d-ter. save/scan 的诊断字段 ----
+        # 用户报⑤：「存档管理还是显示不出我 PS5 中的游戏存档 … 为什么在存档页面
+        # 不显示，扫描不到他的存档」。根因是**查询路径漏了提权**：/user/home/<账号>
+        # 属存档域，没有存档 AuthID（0x4800000000000010）时 opendir 直接被拒 ⇒
+        # 扫描恒返回空，而 backup/restore 因为先调了 save_escalate() 却是好的
+        # （同一个存档「备份能备份、查询说没有」）。宿主上 save_escalate() 走
+        # #ifdef __linux__ 的 return 0，所以 escalated 恒 true —— 这条钉的是
+        # 「字段存在且口径正确」，真机上的提权本身只能上机验。
+        #
+        # 更要紧的是 roots：页面拿它把「提权失败 / 没有账号目录 / 有账号但没存档」
+        # 三件**完全不同的事**分开说。原来它们是同一句「没找到任何存档目录」，
+        # 用户除了「扫不到」什么信息都得不到。
+        st, j = c.get_json("/api/save/scan")
+        check("save/scan reports an escalation state",
+              j and j.get("ok") and "escalated" in j, "j=%s" % j)
+        check("save/scan escalated=true on the host (nothing to escalate to)",
+              j and j.get("escalated") is True, "j=%s" % j)
+        roots = (j or {}).get("roots", [])
+        check("save/scan returns per-root diagnostics",
+              isinstance(roots, list) and len(roots) > 0, "roots=%s" % roots)
+        leaf_names = set()
+        for r in roots:
+            leaf_names.add((r.get("root") or "").rstrip("/").rsplit("/", 1)[-1])
+        check("save/scan diagnostics cover both the PS5 and the PS4 leaf names",
+              {"savedata_prospero", "savedata_prospero_meta",
+               "savedata", "savedata_meta"} <= leaf_names,
+              "leaf_names=%s" % sorted(leaf_names))
+        check("save/scan diagnostics show which root actually yielded titles",
+              any((r.get("opened") and (r.get("titles") or 0) > 0) for r in roots),
+              "roots=%s" % roots)
+        # 夹具里 WFM_SAVE_ROOT 扮演「一个账号的 home」，所以叶在它下面一级；
+        # 若有人把两级写反（home 与 leaf 互换），这里会立刻指出来。
+        check("save/scan diagnostics point at the fixture's leaf, not the home root",
+              any((r.get("root") or "").endswith("savedata_prospero") and r.get("opened")
+                  for r in roots), "roots=%s" % roots)
+
         # ---- 15e. pkg info via form POST (front-end style) must not be 405 ----
         st, j = c.api_post("/api/pkg/info", {"path": ROOT + "/pkgs/game.pkg"})
         check("POST /api/pkg/info (form) is routed, not 405", st != 405,
@@ -929,6 +1025,85 @@ def main():
                   and "Can not resolve" not in msg and "Invalid address" not in msg,
                   "path=%r st=%s j=%s" % (naspath, st, j))
 
+        # 这条同时钉住「共享名之后那个文件夹可以不写」这个答复（用户问④）。
+        st, j = c.api_json("/api/fs/list", {"scheme": "smb", "path": "127.0.0.1"})
+        check("share-less rejection explains the folder after the share is optional",
+              j and not j.get("ok")
+              and "可以不写" in (j.get("error") or ""), "st=%s j=%s" % (st, j))
+
+        # ---- 15g-ter. NAS 源不能走 /api/copy（远程源要走 transfer 层） ----
+        # 用户实测③：「把 NAS 中的文件复制到 PS5 中时会提示复制失败：source not
+        # found」。/api/copy 的第一个动作就是 lstat(src)，而 "192.168.1.3/PS5_Games/x"
+        # 在本机根本不存在 ⇒ 必然 source not found。修法是两半：
+        #   ① 这一形状的源给出**可操作**的文案（指明该用哪个按钮）；
+        #   ② 新增 /api/nas/copy 真正走 transfer 层（断言见下）。
+        st, j = c.api_json("/api/copy", {"paths": "192.168.1.3/PS5_Games/x.bin",
+                                         "dst": ROOT, "overwrite": "0"})
+        check("copy with a NAS-shaped source names the right action",
+              j and not j.get("ok") and "复制到本机" in (j.get("error") or ""),
+              "st=%s j=%s" % (st, j))
+        # 反证另一半：本地路径（以 '/' 开头）漏掉时**不能**也去劝人点「复制到本机」，
+        # 那样只会把人引到错方向。源故意放在 sub/ 下，免得撞上
+        # 「source and destination are the same」那道更早的闸。
+        st, j = c.api_json("/api/copy", {"paths": ROOT + "/sub/nosuch-xyz.bin",
+                                         "dst": ROOT, "overwrite": "0"})
+        check("a genuinely missing LOCAL source still says plain 'source not found'",
+              j and not j.get("ok")
+              and (j.get("error") or "") == "source not found", "st=%s j=%s" % (st, j))
+
+        # ---- 15g-quater. 反方向（本地 → NAS）必须**同步**拒绝 ----
+        # transfer 层**只有读接口**（没有写接口），所以「传到 NAS」此刻做不到。
+        # 不挡的话 /api/copy 会照 "192.168.1.3/PS5_Games" 这个相对形状一路走下去：
+        # 目标路径被当成相对路径接受，任务**入队成功**（前端于是显示"已开始"），
+        # 然后才在空间检查那一步失败 —— 用户拿到的是一个「看起来跑起来了、
+        # 结果莫名其妙失败」的任务，而不是一句「这个方向做不到」。
+        #
+        # ⚠️ 这里原本还有一条「进程当前目录下没多出垃圾树」的断言，**已删**：
+        #    反证时把闸门摘掉，它照样绿 —— 因为目标父目录根本不存在，
+        #    失败发生在写盘之前。一条永远不会变红的断言没有任何价值
+        #    （本项目反复踩的就是这种「看起来在测、其实什么都没测」）。
+        #    dst 用一个**目录**源也不行，试过了：空间检查挡在写之前。
+        st, j = c.api_json("/api/copy", {"paths": ROOT + "/folder",
+                                         "dst": "192.168.1.3/PS5_Games",
+                                         "overwrite": "0"})
+        check("copy to a NAS-shaped destination is refused synchronously",
+              st == 400 and j and not j.get("ok")
+              and j.get("task_id") is None
+              and "本地路径" in (j.get("error") or ""),
+              "st=%s j=%s" % (st, j))
+
+        # ---- 15g-quinquies. /api/nas/copy 的那几道门 ----
+        st, j = c.api_json("/api/nas/copy", {"scheme": "smb",
+                                             "paths": "127.0.0.1/games/readme.txt",
+                                             "dst": "192.168.1.3/PS5_Games"})
+        check("nas/copy refuses a remote destination (bad_target)",
+              st == 400 and j and not j.get("ok")
+              and j.get("error_code") == "bad_target", "st=%s j=%s" % (st, j))
+        st, j = c.api_json("/api/nas/copy", {"scheme": "smb",
+                                             "paths": "127.0.0.1/games/readme.txt",
+                                             "dst": ROOT + "/no-such-dir-xyz"})
+        check("nas/copy refuses a destination that does not exist (bad_target)",
+              st == 400 and j and j.get("error_code") == "bad_target",
+              "st=%s j=%s" % (st, j))
+        st, j = c.api_json("/api/nas/copy", {"scheme": "ftp",
+                                             "paths": "127.0.0.1/games/readme.txt",
+                                             "dst": ROOT})
+        check("nas/copy with an uncompiled backend -> 501 nas_unsupported",
+              st == 501 and j and j.get("error_code") == "nas_unsupported",
+              "st=%s j=%s" % (st, j))
+        st, j = c.api_json("/api/nas/copy", {"scheme": "smb", "paths": "",
+                                             "dst": ROOT})
+        check("nas/copy with an empty paths -> 400 (form of '源路径与目标目录都要填')",
+              st == 400 and j and not j.get("ok"), "st=%s j=%s" % (st, j))
+        # 只有空白/空行 ⇒ 切完一行不剩。这条同时证明两件事：行是按 '\n' 切的，
+        # 且「全是空行」不会被当成一个合法的源混过去（真机上是粘贴带进来的换行）。
+        st, j = c.api_json("/api/nas/copy", {"scheme": "smb",
+                                             "paths": "   \n\t\n  ", "dst": ROOT})
+        check("nas/copy with only blank lines -> '没有可复制的源路径'",
+              st == 400 and j and not j.get("ok")
+              and "没有可复制的源路径" in (j.get("error") or ""),
+              "st=%s j=%s" % (st, j))
+
         # ---- 15h. NAS end-to-end against a real SMB2 server ----
         # Nothing above proves a share can actually be listed; it only proves the
         # failure is NAS-flavoured. This block points the client at a real smbd
@@ -962,6 +1137,56 @@ def main():
             check("NAS smb: unknown share -> clean backend error, not a crash",
                   j and not j.get("ok") and j.get("error_code") == "nas_list_failed",
                   "st=%s j=%s" % (st, j))
+
+            # ---- NAS → PS5 复制（用户报③那条路的真实验证） ----
+            # ⚠️ 只断言任务报 done 是不够的：一个「什么都没拉」的实现也能 done。
+            #   判据必须是**磁盘上的字节**。
+            # 这段同时把切行/跳过空白/去重三条一起走一遍：paths 里故意混进一个
+            # 空行和一条重复，且第二条是一个**目录**（考子树重建）。
+            local_dst = os.path.join(ROOT, "nas-pulled")
+            os.makedirs(local_dst, exist_ok=True)
+            nas_paths = ("127.0.0.1/games/readme.txt\n"
+                         "\n"
+                         "  127.0.0.1/games/readme.txt  \n"
+                         "127.0.0.1/games/subdir")
+            st, j = c.api_json("/api/nas/copy",
+                               {"scheme": "smb", "paths": nas_paths,
+                                "dst": local_dst, "port": str(NAS_PORT)})
+            nas_id = (j or {}).get("task_id")
+            check("nas/copy queues a pull task", j and j.get("ok")
+                  and nas_id is not None, "st=%s j=%s" % (st, j))
+            nas_last = {}
+            if nas_id is not None:
+                for _ in range(150):
+                    st, pj = c.api_post("/api/install/poll", {"id": str(nas_id)})
+                    if not pj or not pj.get("ok"):
+                        break
+                    nas_last = pj
+                    if pj.get("state_name") in ("done", "failed", "cancelled"):
+                        break
+                    time.sleep(0.05)
+            check("nas/copy finished cleanly", nas_last.get("state_name") == "done",
+                  "last=%s" % nas_last)
+            got_readme = got_inner = None
+            try:
+                with open(os.path.join(local_dst, "readme.txt"), "rb") as f:
+                    got_readme = f.read()
+            except OSError:
+                pass
+            try:
+                with open(os.path.join(local_dst, "subdir", "inner.txt"), "rb") as f:
+                    got_inner = f.read()
+            except OSError:
+                pass
+            check("nas/copy landed the file bytes (blank + duplicate lines skipped)",
+                  got_readme == b"hello from nas\n", "got=%r" % (got_readme,))
+            check("nas/copy recreated the remote subtree locally",
+                  got_inner == b"inner\n", "got=%r" % (got_inner,))
+            check("nas/copy total = the two pulled files' bytes (file source counted)",
+                  (nas_last.get("total") or 0)
+                  == len(b"hello from nas\n") + len(b"inner\n"),
+                  "last=%s" % nas_last)
+            c.wait_idle()
         else:
             SKIP.append("NAS end-to-end (nothing listening on 127.0.0.1:%d; "
                         "run .build/nas-fixture.sh as root first)" % NAS_PORT)

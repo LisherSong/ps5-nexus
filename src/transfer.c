@@ -233,6 +233,48 @@ transfer_open(const char *scheme, const char *path) {
   return s;
 }
 
+/* Point an already-open source at another path, reusing the connection.
+ * See transfer.h for why; the short version is that the SMB/NFS contexts live
+ * inside this struct, so transfer_open() per file would reconnect per file. */
+int
+transfer_repoint(transfer_src_t *s, const char *path) {
+  if(!s || !path || !*path) return 0;
+
+  if(s->scheme == SCHEME_LOCAL) {
+    /* No connection to reuse, but the local fd was opened lazily from the OLD
+     * path and would otherwise serve the wrong file. */
+    if(s->fd >= 0) { close(s->fd); s->fd = -1; }
+    s->opened = 0;
+  } else {
+#if defined(NEXUS_HAVE_LIBSMB2) || defined(NEXUS_HAVE_LIBNFS)
+    transfer_nas_t tmp;
+
+    if(!transfer_url_parse(path, &tmp)) return 0;
+    /* Same server / share / credentials / port, or the connection must not be
+     * reused: a tree connect is bound to ONE share, so pointing a connection
+     * at another share would read from the wrong one. */
+    if(strcmp(s->nas.server, tmp.server) || strcmp(s->nas.share, tmp.share) ||
+       strcmp(s->nas.user, tmp.user) || strcmp(s->nas.pass, tmp.pass) ||
+       s->nas.port != tmp.port || s->nas.server_only != tmp.server_only ||
+       s->nas.server_only) return 0;
+    s->nas = tmp;
+#else
+    return 0;   /* backend not compiled in; transfer_open already refused it */
+#endif
+#if defined(NEXUS_HAVE_LIBSMB2)
+    if(s->smb2_fh) { smb2_close(s->smb2, s->smb2_fh); s->smb2_fh = NULL; }
+#endif
+#if defined(NEXUS_HAVE_LIBNFS)
+    if(s->nfs_fh) { nfs_close(s->nfs, s->nfs_fh); s->nfs_fh = NULL; }
+#endif
+  }
+
+  strncpy(s->path, path, NEXUS_PATH_MAX - 1);
+  s->path[NEXUS_PATH_MAX - 1] = 0;
+  s->err[0] = 0;
+  return 1;
+}
+
 /* Shared list-append used by all three backends. */
 static nexus_err_t
 list_push(transfer_entry_t **list, int *n, int *cap,

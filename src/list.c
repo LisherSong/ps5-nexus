@@ -93,9 +93,17 @@ nas_list(struct MHD_Connection *conn, const char *scheme, const char *path,
     sep = pp + strcspn(pp, "/\\");
     while(*sep == '/' || *sep == '\\') sep++;
     if(!*sep) {
+      /* ⚠️ 这句话以前写作「需包含共享名」，用户读成「必须指定一个文件夹」，于是问
+         「我的 SMB 共享本来就是根目录怎么办」。要讲清的是**共享名和文件夹不是一回事**：
+         共享名必须给（SMB 的树连接就按共享名建立，协议层没有「不指定共享」的连接），
+         而共享名**后面**的文件夹可以完全不写 —— 那时进去的就是该共享的根目录。
+         至于「只填主机、列出这台 NAS 有哪些共享」：libsmb2 只能走 IPC$ 去问，
+         而实测相当一批 NAS/Samba 对「IPC$ 上列根目录」是直接断连（见上），
+         所以宁可在这里把话说透，也不要让用户撞上一个与原因毫不相干的网络错误。
+         ⚠️ error_code 与「共享名」这个措辞是 hosttest 钉住的，不要改。 */
       return send_json_error_detail(conn, MHD_HTTP_BAD_REQUEST,
-        "NAS 地址需包含共享名：写成 主机/共享名，"
-        "如 192.168.1.3/PS5_Games（可在 NAS 管理界面查看共享名）",
+        "NAS 地址必须带共享名（SMB 按共享名建立连接），如 192.168.1.3/PS5_Games。"
+        "共享名后面的文件夹可以不写：只写 主机/共享名 进去的就是该共享的根目录",
         "nas_bad_address", NULL);
     }
   }
