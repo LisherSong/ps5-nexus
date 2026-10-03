@@ -22,3 +22,11 @@ NEXUS-linux
 NEXUS-asan
 web-file-mgr.elf
 web-file-mgr-linux
+
+# ---- embedded PC helper -------------------------------------------------
+# serve-pkg.py IS embedded in the ELF (via .incbin); serve-pkg.exe is NOT —
+# it is ~9.2 MB of bundled CPython and ships via the GitHub Release instead.
+# Never let either leak back into the repo.
+assets/serve-pkg.exe
+*.exe
+

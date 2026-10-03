@@ -58,19 +58,26 @@ COMMON_SRCS := src/main.c src/websrv.c src/filemgr.c src/file_response.c src/tas
   src/transfer.c src/archive_extract.c src/elfldr.c
 PS5_SRCS    := $(COMMON_SRCS) src/app_installer.c src/cpu_support_stub.c
 LINUX_SRCS  := $(COMMON_SRCS)
-# assets/serve-pkg.exe (the Windows helper offered as a download off the payload's
+# assets/serve-pkg.py (the Windows helper offered as a download off the payload's
 # own web root) is folded in with .incbin, not with the C-array generator — a
-# 9 MB binary would otherwise produce ~55 MB of source. It is PS5-only and
+# raw script streamed straight to the browser is simpler and stays as one
+# plaintext blob the ELF content assertion can grep. It is PS5-only and
 # optional: without the file the rest of the payload still builds, and the
-# download link 404s. Produce it with tools/build-serve-pkg-exe.sh.
-ifneq ($(wildcard assets/serve-pkg.exe),)
+# download link 404s. Refresh it with tools/build-serve-pkg-exe.sh (it copies
+# tools/serve-pkg.py -> assets/serve-pkg.py).
+# ⚠️ serve-pkg.exe (the PyInstaller one-file build, ~9.2 MB of bundled CPython)
+# is NO LONGER embedded — it would bloat the ELF to ~10.8 MB for no runtime
+# gain. It ships via the GitHub Release instead; assets/index.html links to it
+# externally. Both helpers are excluded from the gzip ASSETS group below so the
+# .incbin copy is the only copy (no double-embedding).
+ifneq ($(wildcard assets/serve-pkg.py),)
 PS5_SRCS    += src/embed_serve_pkg.c
 endif
 BASE_ASSETS := $(filter-out %.dds,$(wildcard assets/*))
 ifneq ($(filter linux,$(MAKECMDGOALS)),)
-ASSETS      := $(filter-out assets/serve-pkg.exe,$(BASE_ASSETS))
+ASSETS      := $(filter-out assets/serve-pkg.exe assets/serve-pkg.py,$(BASE_ASSETS))
 else
-ASSETS      := $(filter-out assets/icon0.png assets/serve-pkg.exe,$(BASE_ASSETS))
+ASSETS      := $(filter-out assets/icon0.png assets/serve-pkg.exe assets/serve-pkg.py,$(BASE_ASSETS))
 endif
 GEN_SRCS    := $(patsubst assets/%,gen/%, $(ASSETS:=.c))
 

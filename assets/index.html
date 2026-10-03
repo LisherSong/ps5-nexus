@@ -1380,13 +1380,14 @@ button{font:inherit;color:inherit;background:none;border:0;cursor:pointer}
         </div>
       </div>
     </div>
-    <!-- 底栏常驻（不跟随中间滚动）：PC 端辅助程序 serve-pkg.exe / .py 就随 payload
-         一起发布，从本机网页直接下载（服务端对这两个后缀会带 Content-Disposition，
-         浏览器一定存盘而不是开新标签）。用 exe 的人不需要装 Python。
-         暂存目录入口也放这里 —— 装完自动清理，但失败时会留在那儿等你看。 -->
+    <!-- 底栏常驻（不跟随中间滚动）：PC 端辅助程序 serve-pkg.py 随 payload 内嵌、从
+         本机网页直接下载（/serve-pkg.py，浏览器一定存盘而不是开新标签，需本机 Python）。
+         serve-pkg.exe 体量太大（PyInstaller 整包 CPython ≈ 9.2MB）不内嵌，改走 GitHub
+         Release 外链（新标签页打开，需联网）。暂存目录入口也放这里 —— 装完自动清理，
+         但失败时会留在那儿等你看。 -->
     <div class="dlg-f" id="ppFoot">
       <div class="prow">
-        <a class="btn sm" id="ppDlExe" href="/serve-pkg.exe" download>下载 serve-pkg.exe（Windows 免安装）</a>
+        <a class="btn sm" id="ppDlExe" href="https://github.com/LisherSong/ps5-nexus/releases/latest/download/serve-pkg.exe" target="_blank" rel="noopener">下载 serve-pkg.exe（GitHub Release，需联网）</a>
         <a class="btn sm" id="ppDlPy" href="/serve-pkg.py" download>下载 serve-pkg.py（需装 Python）</a>
         <button type="button" class="btn sm" id="ppStaging">暂存目录 /data/wfm/incoming</button>
         <span class="sp"></span>

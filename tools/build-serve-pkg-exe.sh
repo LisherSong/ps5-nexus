@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
-# Build assets/serve-pkg.exe — the Windows helper the payload offers as a
-# download (see src/embed_serve_pkg.c).
+# Build serve-pkg.exe — the Windows helper the payload offers as a download.
+#
+# ⚠️ NEW (Plan A / 2026-10-03): the .exe is NO LONGER embedded in the ELF — it
+# would bloat the payload to ~10.8 MB for no runtime gain. It ships via the
+# GitHub Release (assets/index.html links to it as an external download). Only
+# serve-pkg.py is embedded now (see src/embed_serve_pkg.c, which .incbin's it).
 #
 # WHY THIS IS NOT PART OF `make`
 # PyInstaller needs pip, a network (first run) and ~4 minutes. None of that
@@ -52,13 +56,17 @@ cp "$root/tools/serve-pkg.py" "$out/serve-pkg.py"
 ls -l "$out/serve-pkg.exe"
 
 if [ "${1:-}" != "--no-embed" ]; then
-  cp "$out/serve-pkg.exe" "$root/assets/serve-pkg.exe"
   # ⚠️ assets/ 下这份 .py 是 **ELF 内嵌、给 PS5 端当下载链接发出去**的那一份
   # （Makefile 收的是 assets/*，不是 tools/*）。不同步就会出现「exe 是新的、
   # 下载到的 py 还是旧版本」——用户拿到手的脚本里没有本轮的修复。
   # 两份必须永远同源，所以在这里一起 copy。
   cp "$root/tools/serve-pkg.py" "$root/assets/serve-pkg.py"
-  echo "embedded: assets/serve-pkg.exe ($(stat -c%s "$root/assets/serve-pkg.exe") bytes)"
   echo "embedded: assets/serve-pkg.py  ($(stat -c%s "$root/assets/serve-pkg.py") bytes)"
   echo "rebuild the payload:  make all   (or .build/rebuild-elf.sh)"
+  echo
+  echo "⚠️ serve-pkg.exe 不再内嵌进 ELF（9.2MB 的 PyInstaller 整包 CPython 会让"
+  echo "   payload 膨胀到 10.8MB）。它改由 GitHub Release 分发：本地保留"
+  echo "   $out/serve-pkg.exe，发布时上传到同版本 tag："
+  echo "   gh release upload \"$VERSION_TAG\" \"$out/serve-pkg.exe#serve-pkg.exe\""
+  echo "   （VERSION_TAG 取 Makefile 里的 $(grep -m1 VERSION_TAG= \"$root/Makefile\" | cut -d= -f2)）"
 fi
