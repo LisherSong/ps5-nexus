@@ -31,6 +31,7 @@ VERSION_TAG := v1.0.0
 # under a directory the launcher does not recognise. param.json says NEXS88888.
 TITLE_ID    := NEXS88888
 PYTHON      ?= python3
+MINIFY      ?= 1
 STRIP       ?= $(PS5_PAYLOAD_SDK)/bin/prospero-strip
 PKG_CONFIG  ?= $(PS5_PAYLOAD_SDK)/bin/prospero-pkg-config
 HOST_CC     ?= cc
@@ -106,13 +107,13 @@ LINUX_OBJDIR   := linux-obj
 # libsmb2's lib/*.c do `#include "smb2.h"` / "libsmb2-private.h", which live in
 # include/smb2 -- hence the second -I. _U_ is upstream's unused-parameter
 # annotation, defined so the vendor code compiles without us editing it.
-SMB_TP_FLAGS := -O2 -w -Ithird_party/libsmb2 -Ithird_party/libsmb2/include \
+SMB_TP_FLAGS := -Os -w -Ithird_party/libsmb2 -Ithird_party/libsmb2/include \
   -Ithird_party/libsmb2/include/smb2 -DHAVE_CONFIG_H \
   "-D_U_=__attribute__((unused))"
 # libnfs's generated rpcgen headers (libnfs-raw-*.h) sit next to their TUs in the
 # mount/nfs/nfs4/nlm/nsm/portmap/rquota dirs, not in include/ -- upstream's
 # lib/Makefile.am adds one -I per dir, and so do we.
-NFS_TP_FLAGS := -O2 -w -Ithird_party/libnfs -Ithird_party/libnfs/include \
+NFS_TP_FLAGS := -Os -w -Ithird_party/libnfs -Ithird_party/libnfs/include \
   -Ithird_party/libnfs/include/nfsc -Ithird_party/libnfs/mount \
   -Ithird_party/libnfs/nfs -Ithird_party/libnfs/nfs4 -Ithird_party/libnfs/nlm \
   -Ithird_party/libnfs/nsm -Ithird_party/libnfs/portmap \
@@ -174,12 +175,12 @@ ARCH_TP_C_SRCS := $(wildcard third_party/zlib/src/*.c) \
 # AesOpt.c hard-codes x86 AES-NI / AVX / VAES intrinsics (PS5 is Zen 2: all
 # present). HAVE_WZAES / HAVE_PKCRYPT switch on minizip-ng's two ZIP
 # encryption paths; their crypto backend is the in-tree mz_crypt_wfm.c.
-ARCH_C_FLAGS := -O2 -w -Isrc -Ithird_party/unrar7 -Ithird_party/zlib/include \
+ARCH_C_FLAGS := -Os -w -Isrc -Ithird_party/unrar7 -Ithird_party/zlib/include \
   -Ithird_party/minizip-ng/include -Ithird_party/7z \
   -DHAVE_ZLIB -DZLIB_COMPAT -DHAVE_UNISTD_H=1 -D_FILE_OFFSET_BITS=64 \
   -D_LARGEFILE64_SOURCE -DHAVE_FSEEKO -DZ7_PPMD_SUPPORT -DHAVE_WZAES -DHAVE_PKCRYPT
 ARCH_C_FLAGS_7Z := $(ARCH_C_FLAGS) -maes -mavx2 -mvaes
-UNRAR7_CXX_FLAGS      := -O2 -w -std=c++17 -DRARDLL -D_FILE_OFFSET_BITS=64 -D_LARGEFILE_SOURCE
+UNRAR7_CXX_FLAGS      := -Os -w -std=c++17 -DRARDLL -D_FILE_OFFSET_BITS=64 -D_LARGEFILE_SOURCE
 # prospero-clang++ defaults to -stdlib=libc++; state it explicitly for clarity.
 UNRAR7_CXX_FLAGS_PS5  := $(UNRAR7_CXX_FLAGS) -stdlib=libc++
 UNRAR7_CXX_FLAGS_HOST := $(UNRAR7_CXX_FLAGS)
@@ -235,7 +236,7 @@ clean:
 	rm -rf $(BIN) $(LINUX_BIN) gen $(PS5_OBJDIR) $(LINUX_OBJDIR)
 
 gen/%.c: assets/% gen-asset-module.py | gen
-	$(PYTHON) gen-asset-module.py --path $* $< > $@
+	$(PYTHON) gen-asset-module.py --path $* $(if $(filter 1,$(MINIFY)),,--no-minify) $< > $@
 
 # Vendor objects: PS5 tree (prospero-clang) and host tree (cc). Different
 # architectures, so they must never share an object directory.
